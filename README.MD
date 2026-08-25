@@ -25,22 +25,27 @@ Pipeline em três partes (`predict_e10_5.py`):
 
 ```
 virtualembryo/
-├── data/                       # Arquivos .h5ad baixados da competição
+├── data/                              # Arquivos .h5ad baixados da competição
 │   ├── E85.h5ad
 │   ├── E95.h5ad
-│   └── prediction_e10_5.h5ad   # Gerado pelo pipeline
-├── figs/                       # Plots gerados (UMAP, distribuições, etc)
+│   └── prediction_e10_5.h5ad          # Gerado pelo pipeline
+├── figs/                              # Plots gerados (UMAP, distribuições, etc)
 ├── src/
-│   └── scripts/
-│       ├── visualize.py        # Exploração e visualização dos dados brutos
-│       ├── predict_e10_5.py    # Pipeline principal: PCA+delta + LLM + montagem
-│       ├── umap_vec.py         # Reprodução do UMAP oficial (PCA → Harmony → UMAP)
-│       └── get_dummy.py        # Gera uma submissão dummy (baseline zero) para testar o formato
-├── .env                        # Variáveis de ambiente (chave de API do LLM) — não versionar
+│   ├── scripts/
+│   │   ├── visualize.py               # Exploração e visualização dos dados brutos
+│   │   └── get_dummy.py               # Gera uma submissão dummy para testar o formato
+│   └── approaches/                    # Diferentes abordagens exploradas para a Task 1
+│       ├── genomic_expression/        # Abordagem baseada em perfis de expressão gênica
+│       ├── llm/                       # Abordagem usando LLM como preditor/prior
+│       ├── statistical_approximation/ # PCA + delta de centroide (predict_e10_5.py)
+│       └── unsupervised_learning/     # Clustering/embeddings (umap_vec.py e afins)
+├── .env                                # Variáveis de ambiente (chave de API do LLM) — não versionar
 ├── pyproject.toml
 ├── uv.lock
 └── README.md
 ```
+
+> Nota: a divisão acima segue as pastas criadas em `src/approaches/`; ajuste os nomes dos scripts abaixo se a organização final for diferente.
 
 ## Setup
 
@@ -79,7 +84,7 @@ uv run python src/scripts/umap_vec.py --h5ad data/E85.h5ad --out figs/umap_8.5_n
 ### Rodar o pipeline de predição (E8.5 + E9.5 → E10.5)
 
 ```bash
-uv run python src/scripts/predict_e10_5.py \
+uv run python src/scripts/predict_e10_5_PCA.py \
     --e85 data/E85.h5ad \
     --e95 data/E95.h5ad \
     --out data/prediction_e10_5.h5ad
