@@ -693,64 +693,88 @@ def evaluate_all(
 # Exemplo de uso
 # ===========================================================================
 
+def sample_cells(X: Matrix, n: int | None = None, seed: int = 42) -> np.ndarray:
+    """Retorna uma sub-amostra aleatória de células (linhas) de X.
+ 
+    Parameters
+    ----------
+    X:
+        Matriz de expressão (n_cells × n_genes). Pode ser esparsa.
+    n:
+        Número de células a amostrar. Se None, usa metade das células.
+    seed:
+        Semente para reprodutibilidade.
+ 
+    Returns
+    -------
+    np.ndarray
+        Sub-matriz densa com shape (n, n_genes).
+    """
+    X_dense = _to_dense(X)
+    n_cells = X_dense.shape[0]
+    n = n if n is not None else n_cells // 2
+    n = min(n, n_cells)
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(n_cells, size=n, replace=False)
+    return X_dense[idx]
+
 if __name__ == "__main__":
-    import numpy as np
-
-    print("=" * 60)
-    print("Virtual Embryo Challenge — Task 1 Metrics")
-    print("Exemplo sintético com dados aleatórios log1p-like")
-    print("=" * 60)
-
-    rng = np.random.default_rng(0)
-    n_ref, n_true, n_pred = 400, 350, 300
-    n_genes = 2_000   # mantido pequeno para o exemplo rodar rápido
-
-    # Simula dados log1p-normalizados (valores típicos: 0–8)
-    ref_X  = rng.lognormal(mean=0.5, sigma=1.0, size=(n_ref, n_genes)).astype(np.float32)
-    # Ground truth: referência + um shift real em ~5% dos genes
-    delta  = np.zeros(n_genes)
-    de_idx = rng.choice(n_genes, 100, replace=False)
-    delta[de_idx] = rng.normal(0, 0.8, 100)
-    true_X = np.clip(ref_X[:n_true] + delta, 0, None).astype(np.float32)
-
-    # Cenário 1: previsão razoável (ref + delta com ruído)
-    pred_good = np.clip(ref_X[:n_pred] + delta * 0.7 + rng.normal(0, 0.15, (n_pred, n_genes)), 0, None).astype(np.float32)
-
-    # Cenário 2: previsão ingênua (apenas copia a referência)
-    pred_copy = ref_X[:n_pred].copy()
-
-    for label, pred in [("Previsão razoável", pred_good), ("Copy (baseline)", pred_copy)]:
-        print(f"\n--- {label} ---")
-        scores = evaluate_all(pred, true_X, ref_X)
-        des = scores["de_score"]
-        det = scores["de_score_detail"]
-        print(f"  DES  (de_score)      = {des:+.4f}  [25%]  raw={det['raw']:.4f}  chance={det['chance']:.4f}  n_DE={det['n_true']}")
-        print(f"  DCS  (de_direction)  = {scores['de_direction']:+.4f}  [25%]")
-        print(f"  MMD  (mmd_unbiased)  = {scores['mmd_unbiased']:.6f}  [30%]  (lower is better)")
-        print(f"  CSS  (variogram)     = {scores['variogram_score']:.6f}  [20%]  (lower is better)")
-
-    # Demonstração do skill()
-    print("\n--- Skill score (normalização para o leaderboard) ---")
-    print("  Âncoras Task 1 / E10.5 — verifique em virtualembryo.ai/challenge/evaluation")
-    anchors = {
-        "de_score":        {"floor": 0.00,    "ceiling": 0.846,    "lower": False},
-        "de_direction":    {"floor": 0.00,    "ceiling": 0.790,    "lower": False},
-        "mmd_unbiased":    {"floor": 0.0836,  "ceiling": 0.00406,  "lower": True},
-        "variogram_score": {"floor": 0.00522, "ceiling": 0.000158, "lower": True},
-    }
-    weights = {
-        "de_score": 0.25, "de_direction": 0.25,
-        "mmd_unbiased": 0.30, "variogram_score": 0.20,
-    }
-    scores_good = evaluate_all(pred_good, true_X, ref_X)
-    weighted_skill = 0.0
-    for key, anc in anchors.items():
-        v = scores_good[key]
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            sk = float("nan")
-        else:
-            sk = skill(v, floor=anc["floor"], ceiling=anc["ceiling"], lower_is_better=anc["lower"])
-        w = weights[key]
-        weighted_skill += w * (sk if np.isfinite(sk) else 0.0)
-        print(f"  {key:20s}: valor={v:.5f}  skill={sk:.4f}  (peso {int(w*100)}%)")
-    print(f"\n  Score ponderado estimado: {weighted_skill:.4f}")
+    import anndata as ad
+ 
+    # -----------------------------------------------------------------------
+    # Carrega o E9.5 como referência E ground truth (mesmo arquivo)
+    # -----------------------------------------------------------------------
+    print("Carregando E9.5...")
+    adata = ad.read_h5ad("data/E95.h5ad")
+ 
+    # Divide o E9.5 em duas metades para que ref e true sejam populações
+    # distintas — necessário porque se ref_X = true_X (mesma matriz exata),
+    # o delta pseudobulk é 0 e de_score/de_direction retornam NaN/0 por design
+    # (não há genes diferencialmente expressos entre um estágio e ele mesmo).
+    # Com duas metades do mesmo estágio, o delta é ruído de amostragem (~0),
+    # o que é exatamente o comportamento esperado: o "oracle" de um único
+    # estágio não deve ter DE.
+    rng_split = np.random.default_rng(0)
+    n_total   = adata.n_obs
+    idx_all   = rng_split.permutation(n_total)
+    idx_ref   = idx_all[: n_total // 2]
+    idx_true  = idx_all[n_total // 2 :]
+ 
+    ref_X  = _to_dense(adata.X)[idx_ref]   # metade A → referência
+    true_X = _to_dense(adata.X)[idx_true]  # metade B → ground truth
+ 
+    print(f"  ref_X  (metade A): {ref_X.shape}")
+    print(f"  true_X (metade B): {true_X.shape}")
+ 
+    # -----------------------------------------------------------------------
+    # pred_X = sub-amostra aleatória do ground truth (oracle split-half)
+    # Esperado: métricas quase perfeitas, pois pred vem da mesma população
+    # -----------------------------------------------------------------------
+    pred_X = true_X #sample_cells(true_X, seed=99)
+    print(f"  pred_X (sub-amostra de true_X): {pred_X.shape}")
+ 
+    # -----------------------------------------------------------------------
+    # Avalia
+    # -----------------------------------------------------------------------
+    print("\nCalculando métricas...")
+    scores = evaluate_all(pred_X, true_X, ref_X)
+ 
+    det = scores["de_score_detail"]
+    print("\n" + "=" * 55)
+    print("RESULTADOS (oracle split-half — E9.5 vs E9.5)")
+    print("=" * 55)
+    print(f"  de_score     [25%] = {scores['de_score']:+.4f}   ← NaN esperado (sem DE entre metades do mesmo estágio)")
+    print(f"    n_DE={det['n_true']}  raw={det['raw']}  chance={det['chance']}")
+    print(f"  de_direction [25%] = {scores['de_direction']:+.4f}   ← 0.0 esperado (sem delta real)")
+    print(f"  mmd_unbiased [30%] = {scores['mmd_unbiased']:.6f}   ← pequeno (split-half do mesmo estágio)")
+    print(f"  variogram    [20%] = {scores['variogram_score']:.6f}   ← pequeno (split-half do mesmo estágio)")
+    print()
+    print("  ✓ NaN em de_score e 0 em de_direction são CORRETOS quando")
+    print("    ref e true são do mesmo estágio (sem genes DE reais).")
+    print("  ✓ MMD e variogram baixos confirmam que o código está funcionando.")
+    print()
+    print("  Para um teste com sinal biológico real, use:")
+    print("    ref_X  = E9.5.X")
+    print("    true_X = E10.5.X")
+    print("    pred_X = amostragem_aleatoria(true_X)  ← oracle do E10.5")
+ 

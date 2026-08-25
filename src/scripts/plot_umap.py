@@ -1,19 +1,16 @@
 """
-Reprodução do UMAP do Virtual Embryo Challenge — Task 1
-========================================================
+Reprodução do UMAP do Virtual Embryo Challenge — Task 1 (com Harmony)
+========================================================================
 
-Pipeline: PCA (50 PCs) → UMAP
-O arquivo original usou Harmony antes do UMAP, mas a coluna de batch
-não está nos dados distribuídos — só celltype. Por isso rodamos sem Harmony,
-que é o máximo que os dados disponíveis permitem.
+Pipeline: PCA (50 PCs) → Harmony (correção de batch) → UMAP
 
-Este script também compara o UMAP reproduzido com o UMAP oficial já
-presente em adata.obsm['X_umap.harmony.rna'], lado a lado, e calcula
-métricas de concordância entre os dois embeddings.
+O batch é inferido do sufixo do nome das células (ex: '..._1', '..._2'),
+que aparenta ser o rótulo de amostra/lote embutido no índice pelo
+Scanpy/AnnData ao concatenar os dois objetos originais.
 
 Uso:
     python umap_vec.py --h5ad T1_8.5.h5ad --out umap_8.5.png
-    python umap_vec.py --h5ad T1_8.5.h5ad  # salva em umap_output.png
+    python umap_vec.py --h5ad T1_8.5.h5ad --no-harmony   # roda sem Harmony (versão anterior)
 """
 
 import argparse
@@ -23,6 +20,7 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import anndata as ad
 import scanpy as sc
+import scanpy.external as sce
 import matplotlib.pyplot as plt
 from sklearn.manifold import trustworthiness
 from sklearn.metrics import silhouette_score
@@ -31,91 +29,124 @@ from scipy.spatial import procrustes
 
 # ─── parâmetros ────────────────────────────────────────────────────────────────
 
-N_TOP_GENES   = 3000   # HVGs — padrão Scanpy/Seurat para scRNA-seq
-N_PCS         = 50     # componentes PCA antes do UMAP
-N_NEIGHBORS   = 30     # vizinhos para o grafo de células
-MIN_DIST      = 0.3    # espalhamento do UMAP (maior = mais espalhado)
-UMAP_METRIC   = "cosine"  # cosine é padrão quando se usa Harmony
+N_TOP_GENES   = 3000
+N_PCS         = 30
+N_NEIGHBORS   = 30
+MIN_DIST      = 0.3
+UMAP_METRIC   = "cosine"
 RANDOM_STATE  = 42
-REF_OBSM_KEY  = "X_umap.harmony.rna"   # UMAP oficial já presente nos dados
-METRIC_SAMPLE = 5000                    # subamostra p/ métricas custosas (trustworthiness)
+REF_OBSM_KEY  = "X_umap.harmony.rna"
+METRIC_SAMPLE = 5000
 
 
 # ─── pipeline ──────────────────────────────────────────────────────────────────
 
-def run(h5ad_path: str, out_path: str) -> None:
+import pandas as pd
+import harmonypy as hm
 
-    # 1. Carregar
+# ...
+
+def _run_harmony(pca_coords: np.ndarray, batch: np.ndarray, random_state: int = 42) -> np.ndarray:
+    """Roda harmonypy diretamente, sem o wrapper do Scanpy — versões recentes
+    (backend PyTorch) podem retornar Z_corr em formato diferente do que
+    sce.pp.harmony_integrate espera."""
+    meta_data = pd.DataFrame({"batch": batch})
+    ho = hm.run_harmony(pca_coords, meta_data, ["batch"], random_state=random_state)
+
+    z = ho.Z_corr
+    if hasattr(z, "detach"):       # tensor torch
+        z = z.detach().cpu().numpy()
+    else:
+        z = np.asarray(z)
+
+    n_cells, n_pcs = pca_coords.shape
+    if z.shape == (n_pcs, n_cells):
+        z = z.T
+    elif z.shape != (n_cells, n_pcs):
+        raise ValueError(
+            f"Formato inesperado de Z_corr: {z.shape} "
+            f"(esperado ({n_cells}, {n_pcs}) ou ({n_pcs}, {n_cells}))"
+        )
+    return z
+
+def run(h5ad_path: str, out_path: str, use_harmony: bool) -> None:
+
     print(f"Carregando {h5ad_path} ...")
     adata = ad.read_h5ad(h5ad_path)
     print(f"  {adata.n_obs} células × {adata.n_vars} genes")
 
-    # 2. Guardar .X original (log1p-norm) antes de qualquer alteração
     adata.layers["logcounts"] = adata.X.copy()
 
-    # 3. Seleção de genes altamente variáveis
     print(f"Selecionando {N_TOP_GENES} genes altamente variáveis ...")
     sc.pp.highly_variable_genes(
-        adata,
-        n_top_genes=N_TOP_GENES,
-        flavor="seurat_v3",
-        layer="logcounts",
+        adata, n_top_genes=N_TOP_GENES, flavor="seurat_v3", layer="logcounts",
     )
-    n_hvg = adata.var["highly_variable"].sum()
-    print(f"  {n_hvg} HVGs selecionados")
+    print(f"  {adata.var['highly_variable'].sum()} HVGs selecionados")
 
-    # 4. PCA nos HVGs
     print(f"Calculando PCA ({N_PCS} componentes) ...")
     sc.tl.pca(
-        adata,
-        n_comps=N_PCS,
-        use_highly_variable=True,
-        svd_solver="arpack",
-        random_state=RANDOM_STATE,
+        adata, n_comps=N_PCS, use_highly_variable=True,
+        svd_solver="arpack", random_state=RANDOM_STATE,
     )
 
-    # 5. Grafo de vizinhos
-    print(f"Construindo grafo de vizinhos (n_neighbors={N_NEIGHBORS}) ...")
+    pca_rep = "X_pca"
+
+    if use_harmony:
+        batch = _infer_batch(adata)
+        if batch is None:
+            print("[aviso] Não consegui inferir batch a partir do nome das células — seguindo sem Harmony.")
+            use_harmony = False
+        else:
+            adata.obs["batch"] = batch
+            print("Distribuição de batch inferida:")
+            print(adata.obs["batch"].value_counts().to_string())
+            print("Rodando Harmony (correção de batch sobre o PCA) ...")
+            adata.obsm["X_pca_harmony"] = _run_harmony(
+                adata.obsm["X_pca"], adata.obs["batch"].values, random_state=RANDOM_STATE,
+            )
+            pca_rep = "X_pca_harmony"
+
+    print(f"Construindo grafo de vizinhos (n_neighbors={N_NEIGHBORS}, base='{pca_rep}') ...")
     sc.pp.neighbors(
         adata,
         n_neighbors=N_NEIGHBORS,
         n_pcs=N_PCS,
+        use_rep=pca_rep,
         metric=UMAP_METRIC,
         random_state=RANDOM_STATE,
     )
-
-    # 6. UMAP
+    
     print("Calculando UMAP ...")
-    sc.tl.umap(
-        adata,
-        min_dist=MIN_DIST,
-        random_state=RANDOM_STATE,
-    )
+    sc.tl.umap(adata, min_dist=MIN_DIST, random_state=RANDOM_STATE)
 
-    # 7. Pega o UMAP oficial, se existir
     ref_coords = adata.obsm.get(REF_OBSM_KEY)
     if ref_coords is None:
         print(f"[aviso] '{REF_OBSM_KEY}' não encontrado em adata.obsm — plotando só o meu.")
     else:
         ref_coords = np.asarray(ref_coords)
 
-    # 8. Plot
     print(f"Gerando plot → {out_path}")
-    _plot(adata, out_path, ref_coords)
+    _plot(adata, out_path, ref_coords, use_harmony)
 
-    # 9. Métricas de comparação
     if ref_coords is not None:
-        _compare(adata, ref_coords)
+        _compare(adata, ref_coords, pca_rep)
 
     print("Feito.")
 
 
+def _infer_batch(adata: ad.AnnData):
+    """Extrai o sufixo após o último '_' no nome das células como rótulo de batch."""
+    names = adata.obs_names.to_series()
+    if not names.str.contains("_").all():
+        return None
+    suffix = names.str.rsplit("_", n=1).str[-1]
+    # heurística: batch deve ter poucas categorias (não um ID único por célula)
+    if suffix.nunique() < 1 or suffix.nunique() > 20:
+        return None
+    return suffix.values
+
+
 # ─── visualização ──────────────────────────────────────────────────────────────
-
-def _resolve_palette(celltypes):
-    palette = None  # placeholder, resolvido em _plot
-    return palette
-
 
 def _scatter_embedding(ax, coords, celltypes, order, palette, extra_colors, title):
     for ct in order:
@@ -124,13 +155,8 @@ def _scatter_embedding(ax, coords, celltypes, order, palette, extra_colors, titl
         if isinstance(color, dict):
             color = list(color.values())[0]
         ax.scatter(
-            coords[mask, 0],
-            coords[mask, 1],
-            c=[color],
-            s=3,
-            alpha=0.7,
-            linewidths=0,
-            rasterized=True,
+            coords[mask, 0], coords[mask, 1],
+            c=[color], s=3, alpha=0.7, linewidths=0, rasterized=True,
         )
     for ct in order:
         mask = (celltypes == ct).values
@@ -138,11 +164,7 @@ def _scatter_embedding(ax, coords, celltypes, order, palette, extra_colors, titl
             continue
         cx, cy = coords[mask, 0].mean(), coords[mask, 1].mean()
         ax.text(
-            cx, cy, ct,
-            fontsize=10,
-            ha="center",
-            va="center",
-            fontweight="bold",
+            cx, cy, ct, fontsize=10, ha="center", va="center", fontweight="bold",
             bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.5),
         )
     ax.set_title(title, fontsize=12)
@@ -150,7 +172,7 @@ def _scatter_embedding(ax, coords, celltypes, order, palette, extra_colors, titl
     ax.set_xticks([]); ax.set_yticks([])
 
 
-def _plot(adata: ad.AnnData, out_path: str, ref_coords=None) -> None:
+def _plot(adata: ad.AnnData, out_path: str, ref_coords, use_harmony: bool) -> None:
     my_coords = adata.obsm["X_umap"]
     celltypes = adata.obs["celltype"].astype(str)
     palette   = adata.uns.get("celltype_palette", {})
@@ -165,12 +187,13 @@ def _plot(adata: ad.AnnData, out_path: str, ref_coords=None) -> None:
             idx += 1
 
     stage = h5ad_path.split("/")[-1].replace(".h5ad", "")
+    my_label = "Reproduzido (PCA → Harmony → UMAP)" if use_harmony else "Reproduzido (PCA → UMAP, sem Harmony)"
 
     if ref_coords is not None:
         fig, axes = plt.subplots(1, 2, figsize=(22, 10))
         _scatter_embedding(
             axes[0], my_coords, celltypes, order, palette, extra_colors,
-            f"Reproduzido (PCA {N_PCS}PCs → UMAP, sem Harmony)\n{adata.n_obs} células",
+            f"{my_label}\n{adata.n_obs} células",
         )
         _scatter_embedding(
             axes[1], ref_coords, celltypes, order, palette, extra_colors,
@@ -181,7 +204,7 @@ def _plot(adata: ad.AnnData, out_path: str, ref_coords=None) -> None:
         fig, ax = plt.subplots(figsize=(12, 10))
         _scatter_embedding(
             ax, my_coords, celltypes, order, palette, extra_colors,
-            f"Virtual Embryo — {stage}\nPCA ({N_PCS} PCs) → UMAP | {adata.n_obs} células",
+            f"Virtual Embryo — {stage}\n{my_label} | {adata.n_obs} células",
         )
 
     plt.tight_layout()
@@ -191,21 +214,9 @@ def _plot(adata: ad.AnnData, out_path: str, ref_coords=None) -> None:
 
 # ─── métricas de comparação ──────────────────────────────────────────────────
 
-def _compare(adata: ad.AnnData, ref_coords: np.ndarray) -> None:
-    """
-    Compara o embedding reproduzido com o oficial (mesmas células, mesma ordem).
-
-    - Silhouette (por celltype): quão bem cada embedding separa os clusters
-      biológicos conhecidos. É comparável entre os dois, não depende do PCA.
-    - Trustworthiness: quão bem cada embedding 2D preserva a vizinhança local
-      do espaço de PCA que eu calculei. É um proxy justo só para o MEU
-      embedding — o oficial veio de um PCA com correção Harmony que não temos
-      aqui — mas serve de referência de quão "distorcido" cada um ficou.
-    - Procrustes: alinha os dois embeddings (rotação/escala/translação) e
-      mede a dissimilaridade residual — quão parecidas são as duas formas.
-    """
+def _compare(adata: ad.AnnData, ref_coords: np.ndarray, pca_rep: str) -> None:
     my_coords = adata.obsm["X_umap"]
-    x_pca     = adata.obsm["X_pca"]
+    x_pca     = adata.obsm[pca_rep]
     celltypes = adata.obs["celltype"].astype(str).values
 
     n = adata.n_obs
@@ -226,17 +237,16 @@ def _compare(adata: ad.AnnData, ref_coords: np.ndarray) -> None:
     print(f"Trustworthiness vs meu PCA    — reproduzido: {tw_mine:.4f} | oficial: {tw_ref:.4f}")
 
     _, _, disparity = procrustes(my_coords[sample_idx], ref_coords[sample_idx])
-    print(f"Procrustes disparity (reproduzido vs oficial): {disparity:.4f}  "
-          f"(0 = formas idênticas após alinhamento; sem teto fixo — útil pra comparar entre rodadas)")
-
+    print(f"Procrustes disparity (reproduzido vs oficial): {disparity:.4f}")
 
 # ─── entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--h5ad", required=True, help="Caminho para o arquivo .h5ad")
-    parser.add_argument("--out",  default="umap_output.png", help="Arquivo de saída (.png)")
+    parser.add_argument("--out",  default="figs/umap_output.png", help="Arquivo de saída (.png)")
+    parser.add_argument("--no-harmony", action="store_true", help="Roda sem Harmony (comportamento anterior)")
     args = parser.parse_args()
 
     h5ad_path = args.h5ad
-    run(args.h5ad, args.out)
+    run(args.h5ad, args.out, use_harmony=not args.no_harmony)
