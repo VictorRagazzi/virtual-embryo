@@ -110,3 +110,14 @@ Gera `submission_dummy.h5ad`: mesma ordem de genes do dataset de referência, ma
 | Direção da mudança        | 25%  |
 | Distribuição de estados   | 30%  |
 | Co-variação gene-gene     | 20%  |
+
+```python
+from veckit import score
+
+result = score(task="T1", input="data/E95.h5ad", target="data/E95.h5ad", reference="data/E85.h5ad")
+print(result["metrics"])
+```
+
+--target (todas as tarefas) é o pseudo-alvo em relação ao qual a previsão de --input é avaliada. --reference (T1/T2) / --wt (T3) é a expressão de referência em relação à qual de_score/de_direction/severity_slope são calculados — essas são métricas PRIMÁRIAS (“você previu a mudança correta?”, e não apenas “isso parece plausível?”), portanto, passe um valor real sempre que estiver avaliando um modelo real; se omitido, o padrão é o próprio --input, o que só é correto quando você estiver testando deliberadamente uma linha de base sem alterações (copy_last/wt_identity) — nessas métricas, o valor exibido será corretamente 0, correspondendo às tabelas oficiais de linha de base.
+
+Isso não é uma prévia da sua pontuação real na competição. O que quer que você passe como --target é, por definição, dados que você já possuía — portanto, isso apenas indica que o pipeline de pontuação funciona e que o formato da sua submissão é válido, não o quão bem você se sairá na meta real reservada.
