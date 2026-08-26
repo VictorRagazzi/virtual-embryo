@@ -13,14 +13,6 @@ Prever a distribuição de expressão gênica do coração embrionário de camun
 | Validação  | E10.5   | Target — avaliado no leaderboard       |
 | Teste      | E12.5   | Target final — oculto                  |
 
-## Estratégia
-
-Pipeline em três partes (`predict_e10_5.py`):
-
-1. **PCA conjunto + delta de centroide** — ajusta um PCA (50 PCs) sobre E8.5+E9.5 concatenados, calcula o deslocamento de centroide no espaço PCA para cada cell type persistente entre os dois estágios, e aplica esse delta sobre as células de E9.5 para extrapolar E10.5. Tipos exclusivos de E9.5 são copiados sem alteração.
-2. **LLM como prior biológico** — usa um LLM (few-shot com a transição real E8.5→E9.5) para propor quais cell types *novos* (por diferenciação) devem surgir em E10.5, em qual proporção e a partir de qual progenitor de E9.5 herdar o perfil de expressão.
-3. **Montagem final** — combina tipos persistentes (extrapolados) + tipos exclusivos de E9.5 (copiados) + tipos novos (amostrados do progenitor indicado), sub-amostrando de forma estratificada até o total exigido pela submissão (1000–5118 células).
-
 ## Estrutura
 
 ```
