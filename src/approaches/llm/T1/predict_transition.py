@@ -31,45 +31,45 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, ValidationError
 
 SYSTEM_PROMPT = """\
-Voce e' um especialista em biologia do desenvolvimento cardiaco embrionario \
-de camundongo. Voce recebe um resumo (nao os dados brutos) da composicao \
-celular do coracao em dois estagios observados, E8.5 e E9.5: proporcao de \
-cada tipo celular e os principais genes marcadores de cada tipo em E9.5, \
-com a media de expressao em E8.5 e E9.5 para cada marcador.
+You are a specialist in mouse embryonic cardiac developmental biology. You \
+receive a summary (not raw data) of the cellular composition of the heart \
+at two observed stages, E8.5 and E9.5: the proportion of each cell type and \
+the main marker genes for each type at E9.5, along with the mean expression \
+of each marker at E8.5 and E9.5.
 
-Sua tarefa e' extrapolar essa trajetoria para o estagio E10.5 (o proximo \
-estagio observavel, ainda nao visto). Voce NAO deve gerar valores de \
-expressao genica brutos -- apenas decisoes de alto nivel sobre proporcao \
-populacional, direcao/intensidade de tendencia, e possiveis linhagens \
-novas emergindo por diferenciacao, usando seu conhecimento de biologia \
-do desenvolvimento cardiaco (camaras, trato de saida, epicardio, \
-condução, etc).
+Your task is to extrapolate this trajectory to stage E10.5 (the next \
+observable stage, not yet observed). You MUST NOT generate raw gene \
+expression values -- only high-level decisions about population \
+proportions, trend direction/intensity, and possible new lineages emerging \
+through differentiation, using your knowledge of cardiac developmental \
+biology (chambers, outflow tract, epicardium, conduction system, etc.).
 
-Responda SOMENTE com um JSON valido no formato pedido, sem nenhum texto \
-antes ou depois."""
+Respond ONLY with valid JSON in the requested format, with no text before \
+or after it."""
+
 
 OUTPUT_SCHEMA_HINT = """\
-Formato de saida (JSON estrito):
+Output format (strict JSON):
 {
   "predicted_celltypes": [
     {
-      "celltype": "<nome exato do tipo, igual ao card de entrada, se origin != novel_lineage>",
+      "celltype": "<exact cell type name, matching the input card, if origin != novel_lineage>",
       "origin": "persistent" | "continuing_new" | "novel_lineage",
-      "parent_celltype": "<nome de um tipo do input, obrigatorio se novel_lineage, senao null>",
-      "target_proportion": <float 0-1, proporcao esperada da populacao total em E10.5>,
-      "trend_factor": <float, multiplica o delta E8.5->E9.5 ja observado para estimar o delta E9.5->E10.5; use 0 para tipos novel_lineage>,
-      "key_markers": [ {"gene": "<nome>", "direction": "up"|"down", "confidence": "high"|"medium"|"low"} ]
-        (obrigatorio e nao-vazio se origin == "novel_lineage"; opcional/pode ser vazio nos outros casos)
+      "parent_celltype": "<name of an input cell type, required if novel_lineage, otherwise null>",
+      "target_proportion": <float 0-1, expected proportion of the total population at E10.5>,
+      "trend_factor": <float, multiplies the already observed E8.5->E9.5 delta to estimate the E9.5->E10.5 delta; use 0 for novel_lineage types>,
+      "key_markers": [ {"gene": "<name>", "direction": "up"|"down", "confidence": "high"|"medium"|"low"} ]
+        (required and non-empty if origin == "novel_lineage"; optional/may be empty in other cases)
     }
   ],
-  "notes": "<1-2 frases justificando as decisoes mais importantes>"
+  "notes": "<1-2 sentences justifying the most important decisions>"
 }
 
-Regras:
-- Cubra TODOS os tipos "persistent" e "new_in_e9.5" do input (extrapolar mesmo que trend_factor=0).
-- Tipos "lost_after_e8.5" normalmente NAO devem reaparecer -- so inclua se houver razao biologica forte, e explique em "notes".
-- target_proportion de todas as entradas deve somar aproximadamente 1.0.
-- Novas linhagens (novel_lineage) so' devem ser propostas se houver justificativa biologica clara (ex: diferenciacao esperada de um progenitor existente entre E9.5 e E10.5); nao invente por invenar.
+Rules:
+- Cover ALL "persistent" and "new_in_e9.5" types from the input (extrapolate them even if trend_factor=0).
+- Types "lost_after_e8.5" should normally NOT reappear -- only include them if there is a strong biological reason, and explain it in "notes".
+- The target_proportion values across all entries should sum to approximately 1.0.
+- New lineages (novel_lineage) should only be proposed when there is a clear biological justification (e.g., expected differentiation of an existing progenitor between E9.5 and E10.5); do not invent lineages without biological justification.
 """
 
 
