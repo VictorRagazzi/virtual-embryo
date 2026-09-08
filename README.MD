@@ -25,7 +25,8 @@ virtualembryo/
 ├── src/
 │   ├── scripts/
 │   │   ├── visualize.py               # Exploração e visualização dos dados brutos
-│   │   └── get_dummy.py               # Gera uma submissão dummy para testar o formato
+│   │   ├── get_dummy.py               # Gera uma submissão dummy para testar o formato
+│   │   └── pre_processement.py        # Filtro de baixa variância + agrupamento de genes correlacionados
 │   └── approaches/                    # Diferentes abordagens exploradas para a Task 1
 │       ├── genomic_expression/        # Abordagem baseada em perfis de expressão gênica
 │       ├── llm/                       # Abordagem usando LLM como preditor/prior
@@ -98,6 +99,39 @@ uv run python src/scripts/get_dummy.py
 ```
 
 Gera `submission_dummy.h5ad`: mesma ordem de genes do dataset de referência, matriz esparsa toda zerada, 2500 células com barcodes sintéticos — serve só para validar o formato aceito pela plataforma antes de submeter a predição real.
+
+### Pré-processar os dados de expressão gênica
+
+```bash
+uv run python src/scripts/pre_processement.py --e85 data/E85.h5ad --e95 data/E95.h5ad
+```
+
+Executa dois passos sobre os datasets E8.5 e E9.5 concatenados:
+
+1. **Filtro de baixa variância** — remove genes com variância < `--variance-threshold` (default `0.01`) e salva a tabela de removidos em `data/preprocessing/joint_removed_genes.csv`.
+2. **Agrupamento de genes correlacionados** — agrupa genes com correlação de Pearson ≥ `--correlation-threshold` (default `0.95`) via *union-find* em blocos, escolhe um representante por grupo (maior expressão média) e salva os grupos em `data/preprocessing/joint_gene_groups.csv`.
+
+> **Pré-requisito:** os dados devem estar em escala log1p; o script detecta e normaliza automaticamente caso contrário.
+
+Flags disponíveis:
+
+| Flag                      | Default            | Descrição                                                   |
+|---------------------------|--------------------|-------------------------------------------------------------|
+| `--e85`                   | `data/E85.h5ad`    | Caminho para o dataset E8.5                                 |
+| `--e95`                   | `data/E95.h5ad`    | Caminho para o dataset E9.5                                 |
+| `--variance-threshold`    | `0.01`             | Variância mínima (log1p-space) para manter o gene           |
+| `--correlation-threshold` | `0.95`             | Limiar de correlação de Pearson para agrupar dois genes     |
+| `--output-dir`            | `data/preprocessing` | Pasta para salvar as tabelas CSV de saída                 |
+| `--sample-cells`          | `5000`             | Células a amostrar por dataset (0 = usar todas)             |
+
+Saídas geradas em `data/preprocessing/`:
+
+| Arquivo                        | Conteúdo                                                         |
+|-------------------------------|------------------------------------------------------------------|
+| `joint_removed_genes.csv`     | Genes removidos: nome, variância, expressão média, % não-zero   |
+| `joint_gene_groups.csv`       | Grupos: representante, membros, tamanho, correlação min/max      |
+
+
 
 ## Métricas de avaliação (Task 1)
 

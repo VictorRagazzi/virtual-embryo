@@ -1,34 +1,71 @@
 # import anndata as ad
 # import numpy as np
-# import scipy.sparse as sp
 
-# # Carregar o dataset de treino só pra pegar os gene names na ordem certa
-# import scanpy as sc
-# adata_ref = sc.read_h5ad("data/E9.5_RNA.h5ad")  # ajuste o path
+# # =========================
+# # Configurações
+# # =========================
 
-# N_CELLS = 2500
-# gene_names = adata_ref.var_names  # 32.285 genes na ordem certa
+# INPUT_PATH = "data/E85.h5ad"
+# OUTPUT_PATH = "predictions/E85_sample_1200.h5ad"
 
-# # Matriz toda zeros (sparse pra economizar memória)
-# X_dummy = sp.csr_matrix((N_CELLS, len(gene_names)), dtype=np.float32)
+# N_CELLS = 1200
+# SEED = 42  # para tornar a amostragem reproduzível
 
-# # Criar AnnData
-# adata_pred = ad.AnnData(
-#     X=X_dummy,
-#     var=adata_ref.var.copy(),  # mantém o índice de genes na ordem certa
+
+# # =========================
+# # Carregar dataset
+# # =========================
+
+# adata = ad.read_h5ad(INPUT_PATH)
+
+# print("Dataset original:")
+# print(adata)
+
+
+# # =========================
+# # Amostrar células
+# # =========================
+
+# if N_CELLS > adata.n_obs:
+#     raise ValueError(
+#         f"N_CELLS ({N_CELLS}) é maior que o número de células "
+#         f"disponíveis ({adata.n_obs})."
+#     )
+
+# rng = np.random.default_rng(SEED)
+
+# indices = rng.choice(
+#     adata.n_obs,
+#     size=N_CELLS,
+#     replace=False
 # )
 
-# # Barcodes sintéticos
-# adata_pred.obs_names = [f"SYNTH_{i:05d}" for i in range(N_CELLS)]
+# adata_sample = adata[indices].copy()
 
-# adata_pred.write_h5ad("submission_dummy.h5ad")
-# print(adata_pred)
+
+# # =========================
+# # Salvar
+# # =========================
+
+# adata_sample.write_h5ad(OUTPUT_PATH)
+
+# print("\nDataset amostrado:")
+# print(adata_sample)
+
+# print(f"\nSalvo em: {OUTPUT_PATH}")
+
+
+
 
 import anndata as ad
 
 adata = ad.read_h5ad('data/E95.h5ad')
-print('adata: ', adata)
-print('adata.obs_names: ', adata.obs_names)
-print('adata.layers: ', adata.layers)
-print('adata.var: ', adata.var)
-print('adata.uns: ', adata.uns)
+# print('adata: ', adata)
+# print('adata.obs_names: ', adata.obs_names)
+# print('adata.layers: ', adata.layers)
+# print('adata.var: ', adata.var)
+# print('adata.uns: ', adata.uns)
+
+
+print(adata.X[:5,:5])
+print(adata.X.min(), adata.X.max())
