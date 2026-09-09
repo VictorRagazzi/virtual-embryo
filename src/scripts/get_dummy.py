@@ -56,16 +56,12 @@
 
 
 
-
 import anndata as ad
+import numpy as np
 
-adata = ad.read_h5ad('data/E95.h5ad')
-# print('adata: ', adata)
-# print('adata.obs_names: ', adata.obs_names)
-# print('adata.layers: ', adata.layers)
-# print('adata.var: ', adata.var)
-# print('adata.uns: ', adata.uns)
-
-
-print(adata.X[:5,:5])
-print(adata.X.min(), adata.X.max())
+pred = ad.read_h5ad("data/prediction_e9_5_decoder_val.h5ad")
+X = pred.X
+print("shape:", X.shape)
+print("variância média por gene:", X.var(axis=0).mean())
+print("variância média entre as PRIMEIRAS 20 células (por linha, transposto):", X.var(axis=1).mean())
+print("std entre células, gene 0:", X[:, 0].std(), "| valores gene 0, 5 primeiras células:", X[:5, 0])

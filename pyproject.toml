@@ -2,7 +2,7 @@
 name = "virtualembryo"
 version = "0.1.0"
 description = "Virtual Embryo Challenge – temporal gene expression prediction"
-readme = "README.md"
+readme = "README.MD"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "anndata>=0.11",
@@ -21,6 +21,7 @@ dependencies = [
     "torch==2.1.2",
     "torchtext==0.16.2",
     "scgpt==0.2.4",
+    "veckit>=0.1.2",
 ]
 
 [project.optional-dependencies]
@@ -35,3 +36,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "memory-profiler>=0.61.0",
+]

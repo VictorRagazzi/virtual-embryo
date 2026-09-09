@@ -1451,6 +1451,18 @@ wheels = [
 ]
 
 [[package]]
+name = "memory-profiler"
+version = "0.61.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "psutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b2/88/e1907e1ca3488f2d9507ca8b0ae1add7b1cd5d3ca2bc8e5b329382ea2c7b/memory_profiler-0.61.0.tar.gz", hash = "sha256:4e5b73d7864a1d1292fb76a03e82a3e78ef934d06828a698d9dada76da2067b0", size = 35935, upload-time = "2022-11-15T17:57:28.994Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/26/aaca612a0634ceede20682e692a6c55e35a94c21ba36b807cc40fe910ae1/memory_profiler-0.61.0-py3-none-any.whl", hash = "sha256:400348e61031e3942ad4d4109d18753b2fb08c2f6fb8290671c5513a34182d84", size = 31803, upload-time = "2022-11-15T17:57:27.031Z" },
+]
+
+[[package]]
 name = "mistune"
 version = "3.3.4"
 source = { registry = "https://pypi.org/simple" }
@@ -3161,6 +3173,21 @@ wheels = [
 ]
 
 [[package]]
+name = "veckit"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anndata" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a6/66/4c9a37efeebfc2f830432ca849dbcdb0e0f643d127699a27435ff69796be/veckit-0.1.2.tar.gz", hash = "sha256:4fde73b6730e5c24a2b73ae49a77cef6401eca81f1bbe7e71acd458db8f84530", size = 36655, upload-time = "2026-08-25T00:48:45.939Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/d7/a46399dce07f2837915595cbab9fb792dbde85b818911727811d9bb4803e/veckit-0.1.2-py3-none-any.whl", hash = "sha256:2eb3c19caca571f6c5c4deb936bfd697fb7b979e6470b9eb666b244bfd29d3bd", size = 43775, upload-time = "2026-08-25T00:48:44.919Z" },
+]
+
+[[package]]
 name = "virtualembryo"
 version = "0.1.0"
 source = { editable = "." }
@@ -3181,12 +3208,18 @@ dependencies = [
     { name = "seaborn" },
     { name = "torch" },
     { name = "torchtext" },
+    { name = "veckit" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "ipykernel" },
     { name = "jupyterlab" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "memory-profiler" },
 ]
 
 [package.metadata]
@@ -3209,8 +3242,12 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.13" },
     { name = "torch", specifier = "==2.1.2" },
     { name = "torchtext", specifier = "==0.16.2" },
+    { name = "veckit", specifier = ">=0.1.2" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "memory-profiler", specifier = ">=0.61.0" }]
 
 [[package]]
 name = "wadler-lindig"

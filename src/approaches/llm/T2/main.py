@@ -46,7 +46,6 @@ from .train import train_decoder
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-
 def load_concatenated(e85_path: str, e95_path: str, celltype_key: str) -> ad.AnnData:
     a85 = ad.read_h5ad(e85_path)
     a95 = ad.read_h5ad(e95_path)
@@ -63,7 +62,7 @@ def load_concatenated(e85_path: str, e95_path: str, celltype_key: str) -> ad.Ann
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("stage", choices=["embed", "train", "evaluate", "all"])
+    p.add_argument("stage", choices=["embed", "train", "evaluate", "score", "all"])
 
     # dados
     p.add_argument("--e85", default="data/E85.h5ad")
@@ -95,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--decoder-name", default="scgpt_expression_decoder.pt")
     p.add_argument("--cache-dir", default="data/scgpt_cache")
     p.add_argument("--predictions-out", default="data/prediction_e9_5_decoder_val.h5ad")
+    p.add_argument(
+        "--score-input",
+        default="data/prediction_e9_5_decoder_val.h5ad",
+        help="arquivo .h5ad de predições já gerado para calcular o score",
+    )
 
     return p
 
@@ -102,10 +106,28 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
 
+    # --- score: avalia uma predição já existente, sem encoder/treino ---
+    if args.stage == "score":
+        score_path = Path(args.score_input)
+
+        if not score_path.exists():
+            raise FileNotFoundError(
+                f"Arquivo de predição não encontrado: {score_path}"
+            )
+        metrics = run_veckit_score(
+            score_path,
+            target_path=args.e95,
+            reference_path=args.e85,
+        )
+        print("\nMétricas veckit:")
+        for k, v in metrics.items():
+            print(f"  {k}: {v}")
+
+        return
+
     models_dir = Path(args.models_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
     decoder_path = models_dir / args.decoder_name
-
     joint = load_concatenated(args.e85, args.e95, args.celltype_key)
     cell_types = joint.obs[args.celltype_key].to_numpy()
     stage = joint.obs["stage"].to_numpy()
