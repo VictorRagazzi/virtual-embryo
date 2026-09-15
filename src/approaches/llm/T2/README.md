@@ -42,6 +42,20 @@ e não restringe tipos celulares. Estratégias desconhecidas geram erro.
 
 ## Recursos oficiais
 
+No servidor, execute da raiz do projeto (Python 3.11 ou superior, sem dependências adicionais):
+
+```bash
+python3 script/download_model.py
+# Para salvar em outro local:
+python3 script/download_model.py --output-dir /caminho/models/mouse-Geneformer
+```
+
+O script baixa os pesos e os três dicionários, gera `gene_map.csv` e registra
+`resources.json`. Trata a confirmação do Google Drive e verifica SHA-256 antes
+de disponibilizar cada arquivo. Uma nova execução reutiliza arquivos válidos e
+baixa apenas os ausentes; arquivos existentes divergentes geram erro e são
+preservados. É necessário acesso à internet ao Google Drive e ao Hugging Face.
+
 Pesos: [Mouse-Geneformer base, seis blocos](https://github.com/machine-perception-robotics-group/Mouse-Geneformer#trained-model).
 Dicionários: [Mouse-Genecorpus-20M dos autores](https://huggingface.co/datasets/MPRG/Mouse-Genecorpus-20M/tree/main),
 conforme a [resposta sobre arquivos ausentes](https://github.com/machine-perception-robotics-group/Mouse-Geneformer/issues/1).
