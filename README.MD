@@ -22,6 +22,8 @@ virtualembryo/
 │   ├── E95.h5ad
 │   └── prediction_e10_5.h5ad          # Gerado pelo pipeline
 ├── figs/                              # Plots gerados (UMAP, distribuições, etc)
+├── models/
+│   └── scGPT_heart/                   # Artefatos/modelos ligados ao uso de scGPT no domínio de coração
 ├── src/
 │   ├── scripts/
 │   │   ├── visualize.py               # Exploração e visualização dos dados brutos
@@ -29,7 +31,10 @@ virtualembryo/
 │   │   └── pre_processement.py        # Filtro de baixa variância + agrupamento de genes correlacionados
 │   └── approaches/                    # Diferentes abordagens exploradas para a Task 1
 │       ├── genomic_expression/        # Abordagem baseada em perfis de expressão gênica
-│       ├── llm/                       # Abordagem usando LLM como preditor/prior
+│       ├── llm/                       # Abordagens com modelos de linguagem/representação para expressão gênica
+│       │   └── T1/
+│       │       ├── fine_tuning/        # Experimentos de ajuste fino para adaptar o modelo à Task 1
+│       │       └── moscot_apply/       # Aplicação de estratégia inspirada em MOSCOT/OT para mapear estados temporais
 │       ├── statistical_approximation/ # PCA + delta de centroide (predict_e10_5.py)
 │       └── unsupervised_learning/     # Clustering/embeddings (umap_vec.py e afins)
 ├── .env                                # Variáveis de ambiente (chave de API do LLM) — não versionar
@@ -38,7 +43,7 @@ virtualembryo/
 └── README.md
 ```
 
-> Nota: a divisão acima segue as pastas criadas em `src/approaches/`; ajuste os nomes dos scripts abaixo se a organização final for diferente.
+> Nota: a divisão acima é uma visão de alto nível da organização do projeto. As descrições de `models/scGPT_heart/`, `src/approaches/llm/T1/fine_tuning/` e `src/approaches/llm/T1/moscot_apply/` são intencionais e resumidas, baseadas no papel indicado pelos nomes das pastas.
 
 ## Setup
 

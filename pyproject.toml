@@ -18,8 +18,7 @@ dependencies = [
     "moscot>=0.5",
     "pyarrow==13.0.0",
     "scikit-learn>=1.4",
-    "torch==2.1.2",
-    "torchtext==0.16.2",
+    "torch>=2.6.0",
     "scgpt==0.2.4",
     "veckit>=0.1.2",
 ]
@@ -40,4 +39,5 @@ packages = ["src"]
 [dependency-groups]
 dev = [
     "memory-profiler>=0.61.0",
+    "pytest>=8.0",
 ]
