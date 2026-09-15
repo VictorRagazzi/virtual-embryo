@@ -1,0 +1,2 @@
+# Instalar sobre o ambiente do projeto; separado para preservar as dependências do T1.
+transformers>=4.40,<5

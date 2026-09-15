@@ -138,6 +138,14 @@ Saídas geradas em `data/preprocessing/`:
 
 
 
+## Mouse-Geneformer multitemporal
+
+A abordagem em [src/approaches/llm/T2](src/approaches/llm/T2/README.md) usa
+Mouse-Geneformer pré-treinado com `t` e `Δt` explícitos e pareamento substituível
+por vizinhança. O fluxo reserva 2.000 células de E8.5 e 2.000 de E9.5 antes do
+treino e compara apenas essas amostras com `veckit`. O README da abordagem reúne
+os comandos, recursos oficiais e limites do experimento.
+
 ## Métricas de avaliação (Task 1)
 
 | Métrica                   | Peso |

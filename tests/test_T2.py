@@ -1,0 +1,221 @@
+import argparse
+import json
+
+import anndata as ad
+import numpy as np
+import pandas as pd
+import pytest
+from scipy import sparse
+import torch
+
+from src.approaches.llm.T2.data import (
+    prepare_expression, pair_cells, split_cells, tokenize_expression,
+)
+from src.approaches.llm.T2.model import TemporalGeneformer
+from src.approaches.llm.T2.temporal import build_pairs, predict, train
+from src.approaches.llm.T2.experiment import prepare, read_sample, evaluate
+
+
+def test_neighbors_allow_repeated_destination():
+    indices, distances = pair_cells(np.array([[0.0], [0.2], [10.0]]), np.array([[9.0], [0.0]]))
+    np.testing.assert_array_equal(indices, [1, 1, 0])
+    np.testing.assert_allclose(distances, [0, 0.2, 1])
+
+
+def test_normalization_and_token_rank():
+    counts = sparse.csr_matrix([[10, 4, 0]], dtype=np.float32)
+    linear, expression = prepare_expression(counts, "counts")
+    _, from_log = prepare_expression(sparse.csr_matrix(np.log1p(counts.toarray())), "log1p")
+    np.testing.assert_allclose(expression.toarray(), from_log.toarray(), rtol=1e-6)
+    ids, mask = tokenize_expression(linear, ["a", "b", "c"],
+                                    {"<pad>": 0, "a": 1, "b": 2, "c": 3},
+                                    {"a": 10, "b": 1, "c": 1}, 3)
+    np.testing.assert_array_equal(ids, [[2, 1, 0]])
+    np.testing.assert_array_equal(mask, [[True, True, False]])
+    with pytest.raises(ValueError, match="inteiras"):
+        prepare_expression(sparse.csr_matrix([[1.5, 2]]), "counts")
+    with pytest.raises(ValueError, match="vazias"):
+        prepare_expression(sparse.csr_matrix([[0, 0]]), "counts")
+
+
+def test_groups_and_multistage_pairs_do_not_leak():
+    obs = pd.DataFrame({"embryo": ["a", "a", "b", "b", "c", "c"]}, index=list("abcdef"))
+    training, validation = split_cells(obs, 0.3, 42, "embryo")
+    assert set(obs.iloc[training].embryo).isdisjoint(obs.iloc[validation].embryo)
+    stages = {day: {"obs": obs, "expression": sparse.csr_matrix(np.random.default_rng(int(day * 10)).random((6, 4)), dtype=np.float32)} for day in [6.75, 7.25, 8.5]}
+    splits = {day: (training, validation) for day in stages}
+    pairs, records = build_pairs(stages, splits, 2, 42)
+    assert set(zip(records.time, records.future_time)) == {(6.75, 7.25), (6.75, 8.5), (7.25, 8.5)}
+    for split, rows in enumerate(pairs):
+        for start, end, source, target in rows:
+            assert source in splits[start][split]
+            assert target in splits[end][split]
+    training_cells = set(records[records.split == "train"].source_cell) | set(records[records.split == "train"].target_cell)
+    validation_cells = set(records[records.split == "validation"].source_cell) | set(records[records.split == "validation"].target_cell)
+    assert training_cells.isdisjoint(validation_cells)
+
+
+def small_encoder():
+    from transformers import BertConfig, BertModel
+    return BertModel(BertConfig(vocab_size=8, hidden_size=8, num_hidden_layers=2,
+                                num_attention_heads=2, intermediate_size=16,
+                                max_position_embeddings=8, pad_token_id=0), add_pooling_layer=False)
+
+
+def test_freezing_masking_and_prediction_modes():
+    torch.set_num_threads(1)
+    model = TemporalGeneformer(small_encoder(), 3, "delta", 1)
+    assert not any(p.requires_grad for p in model.encoder.embeddings.parameters())
+    assert not any(p.requires_grad for p in model.encoder.encoder.layer[0].parameters())
+    assert all(p.requires_grad for p in model.encoder.encoder.layer[1].parameters())
+    model.train()
+    assert not model.encoder.encoder.layer[0].training
+    assert model.encoder.encoder.layer[1].training
+    model.eval()
+    expression = torch.ones(1, 3)
+    times = torch.tensor([[8.5, 1.0]])
+    short = model(torch.tensor([[1, 2]]), torch.tensor([[1, 1]]), expression, times)
+    padded = model(torch.tensor([[1, 2, 0]]), torch.tensor([[1, 1, 0]]), expression, times)
+    torch.testing.assert_close(short, padded)
+    short.sum().backward()
+    assert any(p.grad is not None for p in model.encoder.encoder.layer[1].parameters())
+    assert all(p.grad is None for p in model.encoder.encoder.layer[0].parameters())
+    for parameter in model.head.parameters():
+        parameter.data.zero_()
+    torch.testing.assert_close(model(torch.tensor([[1]]), torch.tensor([[1]]), expression, times), expression)
+    model.mode = "direct"
+    torch.testing.assert_close(model(torch.tensor([[1]]), torch.tensor([[1]]), expression, times), torch.zeros_like(expression))
+
+
+@pytest.mark.parametrize("mode,group_column", [("delta", None), ("direct", "embryo")])
+def test_train_and_predict_roundtrip(tmp_path, mode, group_column):
+    torch.set_num_threads(1)
+    encoder = tmp_path / "encoder"
+    small_encoder().save_pretrained(encoder)
+    tokens = tmp_path / "tokens.json"
+    tokens.write_text(json.dumps({"<pad>": 0, "a": 1, "b": 2, "c": 3}))
+    medians = tmp_path / "medians.json"
+    medians.write_text(json.dumps({"a": 1, "b": 2, "c": 1}))
+    stages = []
+    for day in [6.75, 7.25, 8.5]:
+        path = tmp_path / f"{day}.h5ad"
+        data = ad.AnnData(sparse.csr_matrix(np.random.default_rng(int(day * 10)).integers(1, 10, (8, 3)), dtype=np.float32),
+                         obs=pd.DataFrame({"celltype": ["test"] * 8, "embryo": ["a", "b", "c", "d"] * 2}, index=[f"cell{i}" for i in range(8)]),
+                         var=pd.DataFrame(index=["a", "b", "c"]))
+        if day == 7.25:
+            data = data[::-1].copy()
+        data.write_h5ad(path)
+        stages.append(f"{day}={path}")
+    args = argparse.Namespace(epochs=1, batch_size=2, learning_rate=0.001, output=tmp_path / "run", seed=42,
+                              tokens=tokens, medians=medians, gene_map=None, encoder=encoder, max_length=3,
+                              expression_scale="counts", layer=None, max_cells=None,
+                              validation_fraction=0.25, group_column=group_column, components=2, mode=mode,
+                              trainable_layers=1, device="cpu")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"stages": stages, "evaluation": {"source": {"cells": ["cell0"]}, "target": {"cells": []}}}))
+    args.manifest = manifest
+    train(args)
+    records = pd.read_csv(args.output / "pairs.csv")
+    assert "cell0" not in set(records.source_cell) | set(records.target_cell)
+    history = json.loads((args.output / "history.json").read_text())
+    assert np.isfinite(history[0]["validation_mse"])
+    if group_column:
+        records = pd.read_csv(args.output / "pairs.csv")
+        members = {}
+        for split in ["train", "validation"]:
+            rows = records[records.split == split]
+            members[split] = {int(cell.removeprefix("cell")) % 4 for cell in set(rows.source_cell) | set(rows.target_cell)}
+        assert members["train"].isdisjoint(members["validation"])
+    destination = tmp_path / "prediction.h5ad"
+    predict(argparse.Namespace(checkpoint=args.output / "best.pt", input=tmp_path / "8.5.h5ad",
+                               output=destination, time=8.5, delta_time=1.0, device="cpu", batch_size=3))
+    result = ad.read_h5ad(destination)
+    assert result.shape == (8, 3)
+    assert np.isfinite(result.X).all() and (result.X >= 0).all()
+    assert (result.obs.timepoint == 9.5).all()
+    assert "celltype" not in result.obs and "source_celltype" in result.obs
+    assert result.var_names.tolist() == ["a", "b", "c"]
+
+
+def test_reserve_is_reproducible_and_excluded_before_tokenization(tmp_path):
+    from src.approaches.llm.T2.data import read_stage
+    for name in ['E85.h5ad', 'E95.h5ad', 'E675_ex.h5ad']:
+        data = ad.AnnData(sparse.csr_matrix(np.ones((12, 3), dtype=np.float32)),
+                         obs=pd.DataFrame(index=[f'{name}-{i}' for i in range(12)]),
+                         var=pd.DataFrame(index=['a', 'b', 'c']))
+        data.write_h5ad(tmp_path / name)
+    first = prepare(tmp_path, tmp_path / 'first.json', sample_size=4)
+    second = prepare(tmp_path, tmp_path / 'second.json', sample_size=4)
+    assert first == second
+    assert len(first['stages']) == 3
+    sample = first['evaluation']['target']
+    assert set(read_sample(sample).obs_names) == set(sample['cells'])
+    stage = read_stage(sample['path'], 'counts', {'<pad>': 0, 'a': 1, 'b': 2, 'c': 3},
+                       {'a': 1, 'b': 1, 'c': 1}, 3, exclude_cells=sample['cells'])
+    assert len(stage['obs']) == 8
+    assert set(stage['obs'].index).isdisjoint(sample['cells'])
+    with pytest.raises(ValueError, match='2000'):
+        prepare(tmp_path, tmp_path / 'large.json', sample_size=2001)
+    with pytest.raises(ValueError, match='2000'):
+        read_sample({'path': 'not_opened.h5ad', 'cells': [str(i) for i in range(2001)]})
+
+
+def test_times_are_inputs_and_intervals_are_irregular():
+    from src.approaches.llm.T2.temporal import TemporalPairs
+    stage = {'input_ids': np.array([[1, 2]]), 'mask': np.array([[True, True]]),
+             'expression': sparse.csr_matrix([[1., 2.]], dtype=np.float32)}
+    dataset = TemporalPairs({6.75: stage, 7.25: stage, 8.5: stage},
+                            [(6.75, 7.25, 0, 0), (7.25, 8.5, 0, 0)])
+    torch.testing.assert_close(dataset[0][3], torch.tensor([6.75, .5]))
+    torch.testing.assert_close(dataset[1][3], torch.tensor([7.25, 1.25]))
+    model = TemporalGeneformer(small_encoder(), 2, 'direct', 0).eval()
+    for parameter in model.head.parameters():
+        parameter.data.zero_()
+    # Faça cada coordenada temporal afetar uma saída diferente.
+    model.head[0].weight.data[0, -2] = 1
+    model.head[0].weight.data[1, -1] = 1
+    model.head[2].weight.data[0, 0] = 1
+    model.head[2].weight.data[1, 1] = 1
+    def forward(time, delta):
+        return model(torch.tensor([[1]]), torch.tensor([[True]]), torch.ones(1, 2),
+                     torch.tensor([[time, delta]]))
+    assert not torch.equal(forward(6.75, .5), forward(7.25, .5))
+    assert not torch.equal(forward(6.75, .5), forward(6.75, 1.25))
+
+
+def test_evaluate_uses_only_reserved_cells_and_same_expression_scale(tmp_path, monkeypatch):
+    import veckit
+    model = TemporalGeneformer(small_encoder(), 3, 'delta', 1)
+    for parameter in model.head.parameters():
+        parameter.data.zero_()
+    for name in ['E85.h5ad', 'E95.h5ad']:
+        data = ad.AnnData(sparse.csr_matrix(np.arange(1, 31).reshape(10, 3), dtype=np.float32),
+                         obs=pd.DataFrame({'celltype': ['a', 'b'] * 5},
+                                          index=[f'{name}-{i}' for i in range(10)]),
+                         var=pd.DataFrame(index=['a', 'b', 'c']))
+        data.write_h5ad(tmp_path / name)
+    manifest = prepare(tmp_path, tmp_path / 'manifest.json', sample_size=4)
+    checkpoint = tmp_path / 'checkpoint.pt'
+    torch.save({'state_dict': model.state_dict(), 'encoder_config': model.encoder.config.to_dict(),
+                'genes': ['a', 'b', 'c'], 'tokens': {'<pad>': 0, 'a': 1, 'b': 2, 'c': 3},
+                'medians': {'a': 1, 'b': 1, 'c': 1}, 'gene_map': None,
+                'expression_scale': 'counts', 'layer': None, 'max_length': 3,
+                'mode': 'delta', 'trainable_layers': 1, 'stages': [8.5, 9.5],
+                'manifest': manifest}, checkpoint)
+    calls = []
+    def score(**kwargs):
+        prediction = ad.read_h5ad(kwargs['input'])
+        target = ad.read_h5ad(kwargs['target'])
+        reference = ad.read_h5ad(kwargs['reference'])
+        assert kwargs['task'] == 'T1'
+        assert prediction.shape == target.shape == reference.shape == (4, 3)
+        assert set(target.obs_names) == set(manifest['evaluation']['target']['cells'])
+        assert set(reference.obs_names) == set(manifest['evaluation']['source']['cells'])
+        assert 'celltype' not in prediction.obs
+        assert prediction.var_names.equals(reference.var_names)
+        np.testing.assert_allclose(prediction.X, reference.X.toarray())
+        calls.append(kwargs)
+        return {'metrics': {'test': 1}}
+    monkeypatch.setattr(veckit, 'score', score)
+    evaluate(checkpoint, tmp_path / 'evaluation', batch_size=2)
+    assert len(calls) == 1

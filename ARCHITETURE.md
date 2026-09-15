@@ -1,6 +1,6 @@
 # Arquitetura do projeto
 
-Este documento é o primeiro ponto de consulta para entender o repositório. Ele descreve apenas as duas áreas que mais precisam de contexto: os scripts e a abordagem baseada em modelos de linguagem.
+Este documento é o primeiro ponto de consulta para entender o repositório. Ele descreve os scripts e as abordagens de predição baseadas em Transformers.
 
 ## Fluxo geral
 
@@ -32,6 +32,8 @@ Os dados ficam em `data/`, as figuras em `figs/`, os modelos em `models/` e o c�
 | `test_score.py` | Executa uma validação simples do pipeline de pontuação. |
 | `get_dummy.py` | Rascunho desativado para gerar ou amostrar uma submissão de teste. |
 | `test.py` | Arquivo vazio, sem responsabilidade definida no momento. |
+| `split_by_day.py` | Separa um `.h5ad` por uma coluna temporal, preserva expressão e gera um manifesto sem sobrescrever saídas. |
+| `subset_heart.py` | Seleciona rótulos cardíacos explícitos em E85/E95 e no índice Hugging Face; preserva a expressão e registra a origem do dia informado. |
 
 Ao adicionar uma etapa curta, prefira incluí-la no script ao qual ela pertence. Crie outro arquivo somente quando existir uma operação independente que faça sentido executar sozinha.
 
@@ -62,6 +64,29 @@ O resultado serve como dados de treino para a etapa seguinte. O pareamento é um
 6. `predict.py` produz a previsão final e recompõe genes não previstos.
 
 Os `README.md` dentro de `moscot_apply/` e `fine_tuning/` guardam comandos, parâmetros e limitações específicos. Consulte-os apenas ao trabalhar diretamente nessas etapas.
+
+## Mouse-Geneformer temporal
+
+`src/approaches/mouse_geneformer/` implementa uma abordagem independente de `llm/T1`, com múltiplos estágios e intervalos explícitos:
+
+1. `data.py` alinha genes, normaliza expressão, cria tokens por rank/mediana e separa células; `select_future_neighbors` concentra a estratégia substituível de pareamento;
+2. `temporal.py train` ajusta uma SVD somente no treino, cria pseudo-pares dentro de cada split e treina todas as transições crescentes informadas;
+3. `model.py` congela o encoder pré-treinado, exceto os últimos blocos configuráveis, e prevê expressão direta ou delta com `t` e `Δt`;
+4. `temporal.py predict` usa o checkpoint para exportar expressão futura em escala log1p normalizada.
+
+Os dados embrionários locais confirmados são E8.5/E9.5. Os arquivos baixados de Weinreb e Veres foram separados em `data/by_day/`, mas seus dias experimentais não são estágios embrionários. O índice Hugging Face referencia outras matrizes que não estão disponíveis localmente. Pesos, vocabulário, medianas, mapeamento de genes e confirmação da escala de entrada são requisitos para o treino real. Veja [comandos, dados e limitações](src/approaches/mouse_geneformer/README.md).
+
+## Experimento Mouse-Geneformer em T2
+
+`src/approaches/llm/T2/` adapta a implementação local de Mouse-Geneformer para
+o experimento multitemporal com os arquivos embrionários disponíveis E6.75–E9.5.
+`experiment.py prepare` reserva IDs de 2.000 células oficiais de E8.5 e de E9.5.
+`temporal.py train` exclui a reserva antes da preparação e do pareamento;
+`data.py::pair_cells` concentra a escolha do vizinho em uma projeção ajustada
+somente no treino. O modelo recebe o tempo de origem e o intervalo de cada par.
+`experiment.py evaluate` recupera a reserva do checkpoint, prevê E9.5 e chama
+`veckit.score(task="T1")` somente com as amostras. O código experimental anterior
+foi preservado. Veja [execução e limitações](src/approaches/llm/T2/README.md).
 
 ## Regra para novas implementações
 
