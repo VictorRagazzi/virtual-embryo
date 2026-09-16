@@ -1,4 +1,4 @@
-"""Treino multitemporal e previsão em h5ad."""
+"""Treino multitemporal e previsão em h5ad: uv run python -m ...temporal --help."""
 
 import argparse
 import itertools

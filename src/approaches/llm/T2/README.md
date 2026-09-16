@@ -52,12 +52,11 @@ uv sync
 
 ## Recursos oficiais
 
-Baixe os recursos do Mouse-Geneformer:
+Baixe os recursos do Mouse-Geneformer em `models/mouse-Geneformer`:
 
 ```bash
-uv run t2-download-model
-# Para salvar em outro local:
-uv run t2-download-model --output-dir /caminho/models/mouse-Geneformer
+uv run python script/download_model.py \
+  --output-dir models/mouse-Geneformer
 ```
 
 O script baixa os pesos e os três dicionários, gera `gene_map.csv` e registra
@@ -104,14 +103,14 @@ Os alvos, a referência E8.5 e o alvo E9.5 da avaliação usam a mesma escala:
 Preparar a reserva (recusa sobrescrever um manifesto existente):
 
 ```bash
-uv run t2-experiment prepare \
+uv run python -m src.approaches.llm.T2.experiment prepare \
   --data-dir data --output data/T2/manifest.json
 ```
 
 Treino piloto em CPU, com os pesos reais:
 
 ```bash
-uv run t2-temporal train \
+uv run python -m src.approaches.llm.T2.temporal train \
   --manifest data/T2/manifest.json \
   --encoder models/mouse-Geneformer \
   --tokens models/mouse-Geneformer/MLM-re_token_dictionary_v1.pkl \
@@ -138,7 +137,7 @@ inclui os genes, recursos de tokenização e o manifesto exato da reserva.
 Avaliação solicitada, sempre limitada a no máximo 2.000 células por arquivo:
 
 ```bash
-uv run t2-experiment evaluate \
+uv run python -m src.approaches.llm.T2.experiment evaluate \
   --checkpoint models/T2_temporal/best.pt \
   --output data/T2/evaluation --batch-size 8 --device cpu
 ```
@@ -159,7 +158,7 @@ Inferência avulsa (a entrada deste comando deve estar previamente amostrada se
 for usada para avaliação):
 
 ```bash
-uv run t2-temporal predict \
+uv run python -m src.approaches.llm.T2.temporal predict \
   --checkpoint models/T2_temporal/best.pt \
   --input data/T2/evaluation/source_raw.h5ad --time 8.5 --delta-time 1.0 \
   --output data/T2/prediction_again.h5ad

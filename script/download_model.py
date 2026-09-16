@@ -1,4 +1,8 @@
-"""Baixa os recursos oficiais do Mouse-Geneformer usados pelo pipeline T2."""
+"""Baixa os recursos oficiais do Mouse-Geneformer usados pelo pipeline T2.
+
+Execute da raiz: uv run python script/download_model.py
+Usa somente a biblioteca padrão do Python.
+"""
 
 import argparse
 import csv
