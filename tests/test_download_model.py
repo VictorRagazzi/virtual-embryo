@@ -5,7 +5,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from script import download_model as downloader
+from src.scripts import download_model as downloader
 
 
 def response(content, content_type='application/octet-stream'):
