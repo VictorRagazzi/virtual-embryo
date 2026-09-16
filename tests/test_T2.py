@@ -12,7 +12,7 @@ from src.approaches.llm.T2.data import (
     prepare_expression, pair_cells, split_cells, tokenize_expression,
 )
 from src.approaches.llm.T2.model import TemporalGeneformer
-from src.approaches.llm.T2.temporal import build_pairs, predict, train
+from src.approaches.llm.T2.temporal import build_pairs, distribution_loss, grouped_batches, predict, train
 from src.approaches.llm.T2.experiment import prepare, read_sample, evaluate
 
 
@@ -62,9 +62,9 @@ def small_encoder():
                                 max_position_embeddings=8, pad_token_id=0), add_pooling_layer=False)
 
 
-def test_freezing_masking_and_prediction_modes():
+def test_freezing_masking_and_zero_interval():
     torch.set_num_threads(1)
-    model = TemporalGeneformer(small_encoder(), 3, "delta", 1)
+    model = TemporalGeneformer(small_encoder(), 3, 1)
     assert not any(p.requires_grad for p in model.encoder.embeddings.parameters())
     assert not any(p.requires_grad for p in model.encoder.encoder.layer[0].parameters())
     assert all(p.requires_grad for p in model.encoder.encoder.layer[1].parameters())
@@ -83,12 +83,18 @@ def test_freezing_masking_and_prediction_modes():
     for parameter in model.head.parameters():
         parameter.data.zero_()
     torch.testing.assert_close(model(torch.tensor([[1]]), torch.tensor([[1]]), expression, times), expression)
-    model.mode = "direct"
-    torch.testing.assert_close(model(torch.tensor([[1]]), torch.tensor([[1]]), expression, times), torch.zeros_like(expression))
+    model.head[-1].bias.data.fill_(0.5)
+    for delta, alpha in [(0.0, 1.0), (1.0, 0.0)]:
+        result = model(torch.tensor([[1]]), torch.tensor([[1]]), expression,
+                       torch.tensor([[8.5, delta]]), alpha=alpha)
+        assert torch.equal(result, expression)
+    normal = model(torch.tensor([[1]]), torch.tensor([[1]]), expression, times, alpha=1.0)
+    doubled = model(torch.tensor([[1]]), torch.tensor([[1]]), expression, times, alpha=2.0)
+    torch.testing.assert_close(doubled - expression, 2 * (normal - expression))
 
 
-@pytest.mark.parametrize("mode,group_column", [("delta", None), ("direct", "embryo")])
-def test_train_and_predict_roundtrip(tmp_path, mode, group_column):
+@pytest.mark.parametrize("expression_input,mmd_weight,group_column", [("none", 0.0, None), ("projected", 0.0, "embryo"), ("none", 0.1, None)])
+def test_train_and_predict_roundtrip(tmp_path, expression_input, mmd_weight, group_column):
     torch.set_num_threads(1)
     encoder = tmp_path / "encoder"
     small_encoder().save_pretrained(encoder)
@@ -109,16 +115,27 @@ def test_train_and_predict_roundtrip(tmp_path, mode, group_column):
     args = argparse.Namespace(epochs=1, batch_size=2, learning_rate=0.001, output=tmp_path / "run", seed=42,
                               tokens=tokens, medians=medians, gene_map=None, encoder=encoder, max_length=3,
                               expression_scale="counts", layer=None, max_cells=None,
-                              validation_fraction=0.25, group_column=group_column, components=2, mode=mode,
+                              validation_fraction=0.3 if mmd_weight else 0.25,
+                              group_column=group_column, components=2,
+                              expression_input=expression_input, mmd_weight=mmd_weight,
                               trainable_layers=1, device="cpu")
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"stages": stages, "evaluation": {"source": {"cells": ["cell0"]}, "target": {"cells": []}}}))
     args.manifest = manifest
     train(args)
+    if expression_input == "none" and mmd_weight == 0:
+        (args.output / "best.pt").write_text("arquivo antigo")
+        (args.output / "history.json").write_text("arquivo antigo")
+        (args.output / "pairs.csv").write_text("arquivo antigo")
+        (args.output / "settings.json").write_text("arquivo antigo")
+        (args.output / "outro.txt").write_text("preservar")
+        train(args)
+        assert (args.output / "outro.txt").read_text() == "preservar"
     records = pd.read_csv(args.output / "pairs.csv")
     assert "cell0" not in set(records.source_cell) | set(records.target_cell)
     history = json.loads((args.output / "history.json").read_text())
     assert np.isfinite(history[0]["validation_mse"])
+    assert np.isfinite(history[0]["validation_loss"])
     if group_column:
         records = pd.read_csv(args.output / "pairs.csv")
         members = {}
@@ -128,13 +145,43 @@ def test_train_and_predict_roundtrip(tmp_path, mode, group_column):
         assert members["train"].isdisjoint(members["validation"])
     destination = tmp_path / "prediction.h5ad"
     predict(argparse.Namespace(checkpoint=args.output / "best.pt", input=tmp_path / "8.5.h5ad",
-                               output=destination, time=8.5, delta_time=1.0, device="cpu", batch_size=3))
+                               output=destination, time=8.5, delta_time=1.0, alpha=1.0, device="cpu", batch_size=3))
     result = ad.read_h5ad(destination)
     assert result.shape == (8, 3)
     assert np.isfinite(result.X).all() and (result.X >= 0).all()
     assert (result.obs.timepoint == 9.5).all()
     assert "celltype" not in result.obs and "source_celltype" in result.obs
     assert result.var_names.tolist() == ["a", "b", "c"]
+    if expression_input == "none" and mmd_weight == 0:
+        destination.write_text("arquivo antigo")
+        predict(argparse.Namespace(checkpoint=args.output / "best.pt", input=tmp_path / "8.5.h5ad",
+                                   output=destination, time=8.5, delta_time=1.0,
+                                   alpha=1.0, device="cpu", batch_size=3))
+        assert ad.read_h5ad(destination).shape == (8, 3)
+    if expression_input == "projected":
+        assert torch.load(args.output / "best.pt", weights_only=True)["expression_input"] == "projected"
+    zero = tmp_path / "zero.h5ad"
+    predict(argparse.Namespace(checkpoint=args.output / "best.pt", input=tmp_path / "8.5.h5ad",
+                               output=zero, time=8.5, delta_time=1.0, alpha=0.0, device="cpu", batch_size=3))
+    _, normalized = prepare_expression(ad.read_h5ad(tmp_path / "8.5.h5ad").X, "counts")
+    np.testing.assert_array_equal(ad.read_h5ad(zero).X, normalized.toarray())
+    reordered_input = tmp_path / "reordered.h5ad"
+    ad.read_h5ad(tmp_path / "8.5.h5ad")[:, [2, 0, 1]].copy().write_h5ad(reordered_input)
+    reordered_output = tmp_path / "reordered_prediction.h5ad"
+    predict(argparse.Namespace(checkpoint=args.output / "best.pt", input=reordered_input,
+                               output=reordered_output, time=8.5, delta_time=0.0,
+                               alpha=1.0, device="cpu", batch_size=3))
+    aligned = ad.read_h5ad(reordered_output)
+    assert aligned.var_names.tolist() == ["a", "b", "c"]
+    np.testing.assert_array_equal(aligned.X, normalized.toarray())
+    old_checkpoint = tmp_path / "old.pt"
+    previous = torch.load(args.output / "best.pt", weights_only=True)
+    del previous["architecture_version"]
+    torch.save(previous, old_checkpoint)
+    with pytest.raises(ValueError, match="Checkpoint anterior incompatível"):
+        predict(argparse.Namespace(checkpoint=old_checkpoint, input=reordered_input,
+                                   output=tmp_path / "old_prediction.h5ad", time=8.5,
+                                   delta_time=1.0, alpha=1.0, device="cpu", batch_size=3))
 
 
 def test_reserve_is_reproducible_and_excluded_before_tokenization(tmp_path):
@@ -145,6 +192,9 @@ def test_reserve_is_reproducible_and_excluded_before_tokenization(tmp_path):
                          var=pd.DataFrame(index=['a', 'b', 'c']))
         data.write_h5ad(tmp_path / name)
     first = prepare(tmp_path, tmp_path / 'first.json', sample_size=4)
+    (tmp_path / 'first.json').write_text('arquivo antigo')
+    assert prepare(tmp_path, tmp_path / 'first.json', sample_size=4) == first
+    assert json.loads((tmp_path / 'first.json').read_text()) == first
     second = prepare(tmp_path, tmp_path / 'second.json', sample_size=4)
     assert first == second
     assert len(first['stages']) == 3
@@ -168,7 +218,7 @@ def test_times_are_inputs_and_intervals_are_irregular():
                             [(6.75, 7.25, 0, 0), (7.25, 8.5, 0, 0)])
     torch.testing.assert_close(dataset[0][3], torch.tensor([6.75, .5]))
     torch.testing.assert_close(dataset[1][3], torch.tensor([7.25, 1.25]))
-    model = TemporalGeneformer(small_encoder(), 2, 'direct', 0).eval()
+    model = TemporalGeneformer(small_encoder(), 2, 0).eval()
     for parameter in model.head.parameters():
         parameter.data.zero_()
     # Faça cada coordenada temporal afetar uma saída diferente.
@@ -183,9 +233,40 @@ def test_times_are_inputs_and_intervals_are_irregular():
     assert not torch.equal(forward(6.75, .5), forward(6.75, 1.25))
 
 
+def test_expression_projection_uses_aligned_gene_magnitudes():
+    model = TemporalGeneformer(small_encoder(), 3, 0, "projected").eval()
+    for parameter in model.head.parameters():
+        parameter.data.zero_()
+    model.expression_projection.weight.data.zero_()
+    model.expression_projection.weight.data[0, 1] = 1
+    model.head[0].weight.data[0, -16] = 1
+    model.head[2].weight.data[0, 0] = 1
+    ids, mask, times = torch.tensor([[1]]), torch.tensor([[True]]), torch.tensor([[8.5, 1.]])
+    first = torch.tensor([[1., 2., 3.]])
+    second = torch.tensor([[1., 4., 3.]])
+    change_first = model(ids, mask, first, times) - first
+    change_second = model(ids, mask, second, times) - second
+    assert change_second[0, 0] > change_first[0, 0]
+    assert torch.equal(change_first[0, 1:], torch.zeros(2))
+
+
+def test_distribution_batches_and_real_future_population():
+    pairs = [(6.75, 8.5, source, 0) for source in range(5)] + [
+        (7.25, 8.5, source, 0) for source in range(4)]
+    for batch in grouped_batches(pairs, 2, True, 42):
+        assert len(batch) >= 2
+        assert len({pairs[index][:2] for index in batch}) == 1
+    prediction = torch.tensor([[0., 1.], [1., 0.]], requires_grad=True)
+    future = torch.tensor([[0., 1.], [1., 0.]])
+    loss = distribution_loss(prediction, future)
+    torch.testing.assert_close(loss, torch.tensor(0.))
+    distribution_loss(prediction, future + 2).backward()
+    assert prediction.grad is not None
+
+
 def test_evaluate_uses_only_reserved_cells_and_same_expression_scale(tmp_path, monkeypatch):
     import veckit
-    model = TemporalGeneformer(small_encoder(), 3, 'delta', 1)
+    model = TemporalGeneformer(small_encoder(), 3, 1)
     for parameter in model.head.parameters():
         parameter.data.zero_()
     for name in ['E85.h5ad', 'E95.h5ad']:
@@ -200,7 +281,8 @@ def test_evaluate_uses_only_reserved_cells_and_same_expression_scale(tmp_path, m
                 'genes': ['a', 'b', 'c'], 'tokens': {'<pad>': 0, 'a': 1, 'b': 2, 'c': 3},
                 'medians': {'a': 1, 'b': 1, 'c': 1}, 'gene_map': None,
                 'expression_scale': 'counts', 'layer': None, 'max_length': 3,
-                'mode': 'delta', 'trainable_layers': 1, 'stages': [8.5, 9.5],
+                'architecture_version': 2, 'expression_input': 'none',
+                'trainable_layers': 1, 'stages': [8.5, 9.5],
                 'manifest': manifest}, checkpoint)
     calls = []
     def score(**kwargs):
@@ -218,4 +300,8 @@ def test_evaluate_uses_only_reserved_cells_and_same_expression_scale(tmp_path, m
         return {'metrics': {'test': 1}}
     monkeypatch.setattr(veckit, 'score', score)
     evaluate(checkpoint, tmp_path / 'evaluation', batch_size=2)
-    assert len(calls) == 1
+    (tmp_path / 'evaluation' / 'target.h5ad').write_text('arquivo antigo')
+    (tmp_path / 'evaluation' / 'extra.txt').write_text('preservar')
+    evaluate(checkpoint, tmp_path / 'evaluation', batch_size=2)
+    assert len(calls) == 2
+    assert (tmp_path / 'evaluation' / 'extra.txt').read_text() == 'preservar'

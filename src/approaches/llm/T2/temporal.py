@@ -1,6 +1,7 @@
-"""Treino multitemporal e previsão em h5ad: uv run python -m ...temporal --help."""
+"""Treino multitemporal e previsão em h5ad: python -m ...temporal --help."""
 
 import argparse
+from collections import defaultdict
 import itertools
 import json
 from pathlib import Path
@@ -33,7 +34,43 @@ class TemporalPairs(Dataset):
                 torch.from_numpy(stage["mask"][source]),
                 torch.from_numpy(stage["expression"][source].toarray().ravel()),
                 torch.tensor([start, end - start], dtype=torch.float32),
-                torch.from_numpy(self.stages[end]["expression"][target].toarray().ravel()))
+                torch.from_numpy(self.stages[end]["expression"][target].toarray().ravel()),
+                end)
+
+
+def distribution_loss(prediction, future):
+    """MMD RBF enviesada entre dois lotes; banda definida só pelo lote real."""
+    if len(prediction) < 2 or len(future) < 2:
+        raise ValueError("MMD exige pelo menos duas células em cada lote.")
+    with torch.no_grad():
+        distances = torch.pdist(future).square()
+        positive = distances[distances > 0]
+        bandwidth = positive.median().clamp_min(1e-6) if len(positive) else future.new_tensor(1.0)
+    within_prediction = torch.exp(-torch.cdist(prediction, prediction).square() / bandwidth)
+    within_future = torch.exp(-torch.cdist(future, future).square() / bandwidth)
+    across = torch.exp(-torch.cdist(prediction, future).square() / bandwidth)
+    return within_prediction.mean() + within_future.mean() - 2 * across.mean()
+
+
+def grouped_batches(pairs, batch_size, shuffle, seed, require_two=False):
+    """Um lote contém somente uma transição, para comparar uma população futura."""
+    groups = defaultdict(list)
+    for index, (start, end, _, _) in enumerate(pairs):
+        groups[(start, end)].append(index)
+    rng = np.random.default_rng(seed)
+    batches = []
+    for indices in groups.values():
+        if shuffle:
+            rng.shuffle(indices)
+        if require_two and len(indices) < 2:
+            raise ValueError("MMD exige pelo menos duas origens por transição e split.")
+        group_batches = [indices[i:i + batch_size] for i in range(0, len(indices), batch_size)]
+        if len(group_batches[-1]) == 1 and len(group_batches) > 1:
+            group_batches[-2].extend(group_batches.pop())
+        batches.extend(group_batches)
+    if shuffle:
+        rng.shuffle(batches)
+    return batches
 
 
 def build_pairs(stages, splits, components, seed):
@@ -64,8 +101,10 @@ def build_pairs(stages, splits, components, seed):
 def train(args):
     if args.epochs < 1 or args.batch_size < 1 or args.learning_rate <= 0:
         raise ValueError("epochs, batch_size e learning_rate devem ser positivos.")
-    if args.output.exists() and any(args.output.iterdir()):
-        raise FileExistsError(f"Diretório de saída deve estar vazio: {args.output}")
+    if args.mmd_weight < 0 or not np.isfinite(args.mmd_weight):
+        raise ValueError("mmd_weight deve ser finito e não negativo.")
+    if args.mmd_weight and args.batch_size < 2:
+        raise ValueError("MMD exige batch_size de pelo menos 2.")
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     tokens = {str(gene): int(value) for gene, value in load_dictionary(args.tokens).items()}
@@ -113,44 +152,67 @@ def train(args):
             if any(len(indices) == 0 for indices in splits[day]):
                 raise ValueError(f"Estágio {day} sem células em um split; revise grupos/fração/seed.")
     pairs, records = build_pairs(stages, splits, args.components, args.seed)
+    if args.mmd_weight and any(len(indices) < 2 for stage_splits in splits.values() for indices in stage_splits):
+        raise ValueError("MMD exige pelo menos duas células por estágio e split.")
     args.output.mkdir(parents=True, exist_ok=True)
     records.to_csv(args.output / "pairs.csv", index=False)
-    model = TemporalGeneformer(encoder, len(genes), args.mode, args.trainable_layers).to(args.device)
+    model = TemporalGeneformer(encoder, len(genes), args.trainable_layers,
+                               args.expression_input).to(args.device)
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.learning_rate)
-    loaders = [DataLoader(TemporalPairs(stages, subset), batch_size=args.batch_size, shuffle=(i == 0)) for i, subset in enumerate(pairs)]
     best = float("inf")
     history = []
     for epoch in range(args.epochs):
         metrics = {"epoch": epoch + 1}
-        for split, loader in enumerate(loaders):
+        for split, subset in enumerate(pairs):
+            batches = grouped_batches(subset, args.batch_size, split == 0,
+                                      args.seed + epoch if split == 0 else args.seed,
+                                      require_two=bool(args.mmd_weight))
+            loader = DataLoader(TemporalPairs(stages, subset), batch_sampler=batches)
             model.train(split == 0)
-            squared_error = baseline_error = count = 0
+            squared_error = baseline_error = mmd_total = count = batch_count = 0
             for batch in loader:
-                ids, mask, expression, times, target = [value.to(args.device) for value in batch]
+                ids, mask, expression, times, target, future_times = [value.to(args.device) for value in batch]
                 with torch.set_grad_enabled(split == 0):
                     prediction = model(ids, mask, expression, times)
                     # Mesmo clamp usado na exportação, apenas durante avaliação.
                     evaluated = prediction if split == 0 else prediction.clamp_min(0)
-                    loss = torch.nn.functional.mse_loss(evaluated, target)
+                    mse = torch.nn.functional.mse_loss(evaluated, target)
+                    if args.mmd_weight:
+                        end = float(future_times[0].item())
+                        if not torch.all(future_times == future_times[0]):
+                            raise RuntimeError("Lote MMD contém tempos de destino diferentes.")
+                        future_indices = splits[end][split]
+                        generator = np.random.default_rng(args.seed + epoch * 100000 + batch_count) if split == 0 else np.random.default_rng(args.seed + batch_count)
+                        chosen = generator.choice(future_indices, len(target), replace=len(future_indices) < len(target))
+                        future = torch.from_numpy(stages[end]["expression"][chosen].toarray()).to(args.device)
+                        mmd = distribution_loss(evaluated, future)
+                    else:
+                        mmd = mse.new_zeros(())
+                    loss = mse + args.mmd_weight * mmd
                     if split == 0:
                         optimizer.zero_grad()
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                         optimizer.step()
-                squared_error += loss.item() * target.numel()
+                squared_error += mse.item() * target.numel()
                 baseline_error += (expression - target).square().sum().item()
+                mmd_total += mmd.item() * target.numel()
                 count += target.numel()
+                batch_count += 1
             label = "train" if split == 0 else "validation"
             metrics[f"{label}_mse"] = squared_error / count
             metrics[f"{label}_persistence_mse"] = baseline_error / count
+            metrics[f"{label}_mmd"] = mmd_total / count
+            metrics[f"{label}_loss"] = metrics[f"{label}_mse"] + args.mmd_weight * metrics[f"{label}_mmd"]
         history.append(metrics)
         print(json.dumps(metrics), flush=True)
-        if metrics["validation_mse"] < best:
-            best = metrics["validation_mse"]
+        if metrics["validation_loss"] < best:
+            best = metrics["validation_loss"]
             torch.save({"state_dict": model.state_dict(), "encoder_config": encoder.config.to_dict(),
                         "genes": genes, "tokens": tokens, "medians": medians, "gene_map": gene_map,
                         "expression_scale": args.expression_scale, "layer": args.layer,
-                        "max_length": args.max_length, "mode": args.mode,
+                        "max_length": args.max_length, "architecture_version": 2,
+                        "expression_input": args.expression_input, "mmd_weight": args.mmd_weight,
                         "trainable_layers": args.trainable_layers, "stages": sorted(stages),
                         "manifest": manifest}, args.output / "best.pt")
         (args.output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
@@ -161,11 +223,11 @@ def train(args):
 def predict(args):
     from transformers import BertConfig, BertModel
 
-    if not np.isfinite([args.time, args.delta_time]).all() or args.delta_time <= 0:
-        raise ValueError("Tempo deve ser finito e delta_time deve ser positivo.")
-    if args.output.exists():
-        raise FileExistsError(args.output)
+    if not np.isfinite([args.time, args.delta_time, args.alpha]).all() or args.delta_time < 0 or args.alpha < 0:
+        raise ValueError("Tempo e alpha devem ser finitos; delta_time e alpha não negativos.")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    if checkpoint.get("architecture_version") != 2:
+        raise ValueError("Checkpoint anterior incompatível: a nova cabeça prevê velocidade; retreine T2.")
     stage = read_stage(args.input, checkpoint["expression_scale"], checkpoint["tokens"],
                        checkpoint["medians"], checkpoint["max_length"], checkpoint["gene_map"], checkpoint["layer"])
     positions = pd.Index(stage["genes"]).get_indexer(checkpoint["genes"])
@@ -173,7 +235,8 @@ def predict(args):
         raise ValueError("Entrada não contém todos os genes de saída do treino.")
     expression = stage["expression"][:, positions].tocsr()
     encoder = BertModel(BertConfig.from_dict(checkpoint["encoder_config"]), add_pooling_layer=False)
-    model = TemporalGeneformer(encoder, len(positions), checkpoint["mode"], checkpoint["trainable_layers"])
+    model = TemporalGeneformer(encoder, len(positions), checkpoint["trainable_layers"],
+                               checkpoint["expression_input"])
     model.load_state_dict(checkpoint["state_dict"])
     model.to(args.device).eval()
     predictions = []
@@ -184,7 +247,7 @@ def predict(args):
             ids = torch.from_numpy(stage["input_ids"][selection]).to(args.device)
             mask = torch.from_numpy(stage["mask"][selection]).to(args.device)
             times = torch.tensor([args.time, args.delta_time], device=args.device).float().expand(len(current), -1)
-            predictions.append(model(ids, mask, current, times).clamp_min(0).cpu().numpy())
+            predictions.append(model(ids, mask, current, times, alpha=args.alpha).clamp_min(0).cpu().numpy())
     observations = stage["obs"].copy()
     observations["source_time"] = args.time
     observations["timepoint"] = args.time + args.delta_time
@@ -194,7 +257,8 @@ def predict(args):
                        var=pd.DataFrame(index=checkpoint["genes"]))
     output.uns["expression_scale"] = "log1p_normalized_10000_before_gene_selection"
     output.uns["training_stages"] = checkpoint["stages"]
-    output.uns["prediction_mode"] = checkpoint["mode"]
+    output.uns["prediction_mode"] = "velocity"
+    output.uns["alpha"] = args.alpha
     output.uns["checkpoint"] = str(args.checkpoint)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     output.write_h5ad(args.output, compression="gzip")
@@ -214,7 +278,8 @@ def main():
     training.add_argument("--expression-scale", choices=["counts", "log1p"], required=True)
     training.add_argument("--layer")
     training.add_argument("--output", type=Path, required=True)
-    training.add_argument("--mode", choices=["delta", "direct"], default="delta")
+    training.add_argument("--expression-input", choices=["none", "projected"], default="none")
+    training.add_argument("--mmd-weight", type=float, default=0.0)
     training.add_argument("--trainable-layers", type=int, default=2)
     training.add_argument("--max-length", type=int, default=2048)
     training.add_argument("--max-cells", type=int, default=2000)
@@ -231,6 +296,7 @@ def main():
     prediction.add_argument("--output", type=Path, required=True)
     prediction.add_argument("--time", type=float, required=True)
     prediction.add_argument("--delta-time", type=float, required=True)
+    prediction.add_argument("--alpha", type=float, default=1.0)
     for command in [training, prediction]:
         command.add_argument("--batch-size", type=int, default=8)
         command.add_argument("--device", default="cpu")

@@ -6,13 +6,23 @@ Pipeline independente em `src/approaches/llm/T2`, adaptado do código local de
 ```text
 expressão → tokens por rank/mediana → Mouse-Geneformer → média com máscara
                                                         + t + Δt
+                                                        + expressão projetada (opcional)
                                                             ↓
-                                                   regressor de expressão
+                                              velocidade por gene
+                                                            ↓
+                              origem + α × Δt × velocidade
 ```
 
 Os embeddings e os primeiros blocos ficam congelados; os dois últimos blocos
-são ajustados por padrão. `--mode delta` prevê a mudança em expressão log
-normalizada e soma à origem. `--mode direct` prevê a expressão futura diretamente.
+são ajustados por padrão. A cabeça prevê velocidade por gene. `Δt=0` ou `α=0`
+retorna exatamente a entrada na escala interna `log1p(CP10k)`; `α` é intensidade
+da correção e pode ser variado na inferência sem retreino. Na exportação, o
+clamp em zero preserva essa identidade porque a entrada interna é não negativa;
+isso não implica igualdade com as contagens brutas do arquivo original.
+Checkpoints anteriores, treinados com saída direta ou delta sem fator temporal,
+**não são compatíveis** com esta cabeça e são rejeitados. É necessário retreinar.
+Os números e artefatos históricos em [RESULTS.md](RESULTS.md) descrevem a
+arquitetura anterior e não são resultados desta revisão.
 A saída inclui todos os genes comuns aos estágios, inclusive genes sem token.
 As predições exportadas são truncadas em zero.
 
@@ -31,7 +41,7 @@ Em E8.5, usamos o arquivo oficial; `E85_ex.h5ad` fica fora para manter uma
 4. Ajusta SVD somente no treino e cria pseudo-pares dentro de cada split.
 5. Treina todas as combinações crescentes: nove estágios geram 36 transições.
    `TemporalPairs` fornece `[t, destino - origem]` para cada par.
-6. Escolhe o menor MSE de validação interna e avalia o checkpoint uma vez sobre
+6. Escolhe a menor perda de validação interna e avalia o checkpoint uma vez sobre
    as duas amostras reservadas.
 
 `data.py::pair_cells(source_expression, future_expression,
@@ -39,6 +49,40 @@ strategy="nearest_neighbor")` é o ponto de troca do pareamento. Recebe duas
 matrizes na mesma projeção SVD e retorna um índice de destino e uma distância
 por origem. O padrão usa similaridade de expressão, permite destinos repetidos
 e não restringe tipos celulares. Estratégias desconhecidas geram erro.
+
+## Entrada quantitativa e perda
+
+`--expression-input none` reproduz a entrada da cabeça anterior: resumo do
+encoder, `t` e `Δt`. `projected` acrescenta uma projeção aprendida de todos os
+genes alinhados para 16 números por célula. Ela recebe magnitudes reais em
+`log1p(CP10k)`, inclusive genes sem token; acrescenta `16 × número de genes`
+pesos, sem nova camada profunda. A ordem dos genes é salva no checkpoint e
+reaplicada na predição. `none` é o padrão para comparar a mudança isolada.
+
+A perda é `MSE(pseudo-par) + --mmd-weight × MMD(população)`, com peso zero por
+padrão. O MSE ainda usa o vizinho escolhido para cada origem. Para MMD, cada
+lote contém apenas uma transição `(t, t+Δt)` e compara suas predições com uma
+amostra **uniforme das células reais do destino no mesmo split**, antes do
+pareamento. Assim, destinos repetidos nos pseudo-pares não alteram a frequência
+da população real. O controle com peso zero usa o mesmo agrupamento dos lotes,
+para isolar o efeito da perda. Os lotes finais de uma célula são unidos ao anterior; são
+necessárias ao menos duas origens por transição em cada split e `batch-size ≥ 2`.
+A MMD usa kernel RBF na expressão completa, banda mediana das distâncias entre
+as células reais do lote e estimador enviesado, estável para lotes pequenos.
+Não é numericamente a métrica `mmd_u` do avaliador. O peso multiplica a MMD
+sem normalização automática; compare MSE, MMD e métricas de avaliação ao
+escolhê-lo **somente com dados de treino/validação interna**. A seleção do
+checkpoint usa essa mesma perda combinada na validação interna.
+
+No `veckit` instalado localmente, `de_score` compara genes de mudança com
+direção correta contra um nulo baseado na expressão de referência;
+`de_direction` mede correlação parcial dos ranks das mudanças, controlando a
+expressão de referência; `mmd_u` é MMD não enviesada com múltiplas bandas em
+PCA ajustada no alvo observado; `variogram` compara médias de diferenças de
+expressão entre pares de genes. Esses termos avaliam propriedades que o MSE
+dos pseudo-pares não mede diretamente. A alternativa acima adiciona somente
+um termo simples de distribuição, sem reproduzir o scorer nem ajustar PCA,
+bandas ou genes com células reservadas.
 
 ## Preparar o ambiente
 
@@ -100,7 +144,7 @@ Os alvos, a referência E8.5 e o alvo E9.5 da avaliação usam a mesma escala:
 
 ## Executar da raiz do projeto
 
-Preparar a reserva (recusa sobrescrever um manifesto existente):
+Preparar a reserva (o manifesto no caminho indicado é sobrescrito):
 
 ```bash
 uv run python -m src.approaches.llm.T2.experiment prepare \
@@ -116,7 +160,7 @@ uv run python -m src.approaches.llm.T2.temporal train \
   --tokens models/mouse-Geneformer/MLM-re_token_dictionary_v1.pkl \
   --medians models/mouse-Geneformer/mouse_gene_median_dictionary.pkl \
   --gene-map models/mouse-Geneformer/gene_map.csv \
-  --expression-scale log1p --mode delta --trainable-layers 2 \
+  --expression-scale log1p --trainable-layers 2 \
   --epochs 3 --batch-size 8 --max-cells 128 --max-length 512 \
   --components 30 --device cpu --output models/T2_temporal
 ```
@@ -131,15 +175,16 @@ Se o treino em CPU deixar a máquina pesada, prefixe o comando com
 a coluna existe em todos os estágios. Isso não transforma a reserva aleatória
 por células em uma avaliação independente por embrião.
 
-Saídas: `best.pt`, `history.json`, `pairs.csv` e `settings.json`. O checkpoint
-inclui os genes, recursos de tokenização e o manifesto exato da reserva.
+Saídas: `best.pt`, `history.json`, `pairs.csv` e `settings.json`. Uma nova
+execução no mesmo diretório sobrescreve esses arquivos e preserva outros. O
+checkpoint inclui os genes, recursos de tokenização e o manifesto da reserva.
 
 Avaliação solicitada, sempre limitada a no máximo 2.000 células por arquivo:
 
 ```bash
 uv run python -m src.approaches.llm.T2.experiment evaluate \
   --checkpoint models/T2_temporal/best.pt \
-  --output data/T2/evaluation --batch-size 8 --device cpu
+  --output data/T2/evaluation --batch-size 8 --device cpu --alpha 1
 ```
 
 Produz `prediction.h5ad`, `target.h5ad`, `reference.h5ad`, `source_raw.h5ad`,
@@ -150,9 +195,9 @@ A biblioteca pode inferi-los a partir da expressão predita.
 
 Os arquivos originais são abertos em modo `backed`; somente as linhas amostradas
 são materializadas. A avaliação recusa amostras acima de 2.000 e não passa os
-arquivos completos ao veckit. Para outra execução, use um diretório de saída
-novo. Reutilizar resultados para ajustar hiperparâmetros consome a independência
-da reserva como teste final.
+arquivos completos ao veckit. Uma nova execução no mesmo diretório sobrescreve
+os arquivos da avaliação. Reutilizar resultados para ajustar hiperparâmetros
+consome a independência da reserva como teste final.
 
 Inferência avulsa (a entrada deste comando deve estar previamente amostrada se
 for usada para avaliação):
@@ -161,8 +206,46 @@ for usada para avaliação):
 uv run python -m src.approaches.llm.T2.temporal predict \
   --checkpoint models/T2_temporal/best.pt \
   --input data/T2/evaluation/source_raw.h5ad --time 8.5 --delta-time 1.0 \
-  --output data/T2/prediction_again.h5ad
+  --alpha 1 --output data/T2/prediction_again.h5ad
 ```
+
+## Experimentos controlados
+
+Use o mesmo manifesto, seed, parâmetros de treino e orçamento em cada execução.
+O comando de treino piloto acima fornece a base; troque somente `--output` e a
+opção indicada abaixo. Para treinos completos, retire o limite piloto de 128
+células e 3 épocas de forma **igual em todas as execuções**. Não use a reserva
+E8.5/E9.5 para escolher hiperparâmetros; use a validação interna e avalie a
+reserva apenas depois de fixar a comparação.
+
+1. Treine a base com `--expression-input none --mmd-weight 0` e saída
+   `models/T2_base`. Compare `α=0`, `0.5`, `1` e `2` no **mesmo** checkpoint,
+   mudando só `--alpha` no comando `temporal predict`. `α=0` mede persistência.
+2. Treine `models/T2_mmd` com `--expression-input none --mmd-weight 0.1`.
+   Compare com a base usando `α=1`.
+3. Treine `models/T2_expression` com `--expression-input projected` e
+   `--mmd-weight 0`. Compare com a base usando `α=1`.
+4. Se 2 e 3 melhorarem os critérios escolhidos na validação interna, treine
+   `models/T2_combined` com `--expression-input projected` e
+   `--mmd-weight 0.1`.
+
+Para gerar as predições de cada `α`, execute, por exemplo:
+
+```bash
+uv run python -m src.approaches.llm.T2.temporal predict \
+  --checkpoint models/T2_base/best.pt \
+  --input data/T2/evaluation/source_raw.h5ad \
+  --time 8.5 --delta-time 1 --alpha 0.5 \
+  --output data/T2/alpha_05.h5ad
+```
+
+Para pontuar uma configuração já escolhida, use `experiment evaluate` com
+`--checkpoint`, `--alpha` e `--output`; esse comando recupera a mesma
+reserva e salva referência, alvo e predição alinhados. Repita com seeds
+diferentes se a diferença for pequena.
+
+Veja a [proposta de transporte ótimo](OT_PROPOSAL.md), ainda sem alteração do
+pareamento atual.
 
 ## Testes e limites
 
@@ -170,7 +253,7 @@ uv run python -m src.approaches.llm.T2.temporal predict \
 uv run pytest -q tests/test_T2.py
 ```
 
-Testes cobrem rank/medianas, congelamento, máscara, direto/delta, dependência de
+Testes cobrem rank/medianas, congelamento, máscara, identidade, dependência de
 `t` e `Δt`, intervalos irregulares, separação antes dos pares, reserva reproduzível,
 limite de memória por amostra e treino/checkpoint/inferência com BERT minúsculo
 aleatório **somente nos testes**.

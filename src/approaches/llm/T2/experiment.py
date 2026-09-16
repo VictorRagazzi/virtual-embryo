@@ -18,8 +18,6 @@ def prepare(data_dir, output, sample_size=2000, seed=42):
     """Reserva células por ID antes do treino; nunca lê matrizes completas."""
     if not 1 <= sample_size <= 2000:
         raise ValueError("A avaliação exige de 1 a 2000 células por amostra.")
-    if output.exists():
-        raise FileExistsError(output)
     # Nomes explícitos evitam interpretar E675 como 67,5 dias.
     files = [(6.5, "E65_ex.h5ad"), (6.75, "E675_ex.h5ad"), (7.0, "E70_ex.h5ad"),
              (7.25, "E725_ex.h5ad"), (7.5, "E75_ex.h5ad"), (7.75, "E775_ex.h5ad"),
@@ -74,17 +72,15 @@ def read_sample(sample, layer=None):
         data.file.close()
 
 
-def evaluate(checkpoint_path, output, batch_size=8, device="cpu"):
+def evaluate(checkpoint_path, output, batch_size=8, device="cpu", alpha=1.0):
     from veckit import score
 
-    if output.exists():
-        raise FileExistsError(output)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     manifest = checkpoint["manifest"]
     source = read_sample(manifest["evaluation"]["source"], checkpoint["layer"])
     target = read_sample(manifest["evaluation"]["target"], checkpoint["layer"])
     print(f"Avaliação: {source.n_obs} origens e {target.n_obs} alvos reservados.", flush=True)
-    output.mkdir(parents=True)
+    output.mkdir(parents=True, exist_ok=True)
     source_path = output / "source_raw.h5ad"
     source.write_h5ad(source_path, compression="gzip")
     for label, data in [("reference", source), ("target", target)]:
@@ -99,7 +95,7 @@ def evaluate(checkpoint_path, output, batch_size=8, device="cpu"):
     del source, target, data, normalized, expression, checkpoint
     predict(argparse.Namespace(checkpoint=checkpoint_path, input=source_path,
                                output=output / "prediction.h5ad", time=8.5, delta_time=1.0,
-                               batch_size=batch_size, device=device))
+                               batch_size=batch_size, device=device, alpha=alpha))
     # T2 é o nome desta abordagem; a tarefa temporal do veckit chama-se T1.
     print("Comparando as distribuições amostradas com veckit (task T1).", flush=True)
     result = score(task="T1", input=output / "prediction.h5ad",
@@ -123,6 +119,7 @@ def main():
     evaluation.add_argument("--output", type=Path, required=True)
     evaluation.add_argument("--batch-size", type=int, default=8)
     evaluation.add_argument("--device", default="cpu")
+    evaluation.add_argument("--alpha", type=float, default=1.0)
     args = parser.parse_args()
     if args.command == "prepare":
         manifest = prepare(args.data_dir, args.output, args.sample_size, args.seed)
@@ -130,7 +127,7 @@ def main():
     else:
         if args.batch_size < 1:
             parser.error("batch-size deve ser positivo")
-        evaluate(args.checkpoint, args.output, args.batch_size, args.device)
+        evaluate(args.checkpoint, args.output, args.batch_size, args.device, args.alpha)
 
 
 if __name__ == "__main__":
