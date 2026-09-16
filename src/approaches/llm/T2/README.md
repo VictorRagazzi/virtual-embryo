@@ -40,14 +40,24 @@ matrizes na mesma projeção SVD e retorna um índice de destino e uma distânci
 por origem. O padrão usa similaridade de expressão, permite destinos repetidos
 e não restringe tipos celulares. Estratégias desconhecidas geram erro.
 
-## Recursos oficiais
+## Preparar o ambiente
 
-No servidor, execute da raiz do projeto (Python 3.11 ou superior, sem dependências adicionais):
+Execute todos os comandos deste documento na raiz do repositório. O projeto usa
+Python 3.11 e o `uv` cria e sincroniza o ambiente virtual a partir do
+`pyproject.toml` e do `uv.lock`:
 
 ```bash
-python3 script/download_model.py
+uv sync
+```
+
+## Recursos oficiais
+
+Baixe os recursos do Mouse-Geneformer:
+
+```bash
+uv run t2-download-model
 # Para salvar em outro local:
-python3 script/download_model.py --output-dir /caminho/models/mouse-Geneformer
+uv run t2-download-model --output-dir /caminho/models/mouse-Geneformer
 ```
 
 O script baixa os pesos e os três dicionários, gera `gene_map.csv` e registra
@@ -74,12 +84,6 @@ e nunca substitui pesos ausentes por inicialização aleatória. Tokenização u
 somente genes expressos, ordenados por expressão linear/mediana oficial, sem
 CLS/SEP, com máscara de padding. `--max-length` aceita até 2.048 genes.
 
-Instalação adicional ao ambiente do projeto:
-
-```bash
-uv pip install --python .venv/bin/python -r src/approaches/llm/T2/requirements.txt
-```
-
 ## Escala de expressão
 
 Declare `--expression-scale counts` para contagens inteiras ou `log1p` para log
@@ -100,15 +104,14 @@ Os alvos, a referência E8.5 e o alvo E9.5 da avaliação usam a mesma escala:
 Preparar a reserva (recusa sobrescrever um manifesto existente):
 
 ```bash
-.venv/bin/python -m src.approaches.llm.T2.experiment prepare \
+uv run t2-experiment prepare \
   --data-dir data --output data/T2/manifest.json
 ```
 
 Treino piloto em CPU, com os pesos reais:
 
 ```bash
-OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 .venv/bin/python \
-  -m src.approaches.llm.T2.temporal train \
+uv run t2-temporal train \
   --manifest data/T2/manifest.json \
   --encoder models/mouse-Geneformer \
   --tokens models/mouse-Geneformer/MLM-re_token_dictionary_v1.pkl \
@@ -123,6 +126,8 @@ OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 .venv/bin/python \
 2.000); não altera seu tamanho. A execução piloto reduz esse valor para 128.
 Para um treino maior, aumente células/épocas e use até 2.048 tokens, conforme os
 recursos disponíveis. `--device cuda` exige uma GPU; o ambiente atual só tem CPU.
+Se o treino em CPU deixar a máquina pesada, prefixe o comando com
+`OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4` para limitar threads numéricas.
 `--group-column` permite manter embriões/réplicas no mesmo split interno quando
 a coluna existe em todos os estágios. Isso não transforma a reserva aleatória
 por células em uma avaliação independente por embrião.
@@ -133,8 +138,7 @@ inclui os genes, recursos de tokenização e o manifesto exato da reserva.
 Avaliação solicitada, sempre limitada a no máximo 2.000 células por arquivo:
 
 ```bash
-OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 .venv/bin/python \
-  -m src.approaches.llm.T2.experiment evaluate \
+uv run t2-experiment evaluate \
   --checkpoint models/T2_temporal/best.pt \
   --output data/T2/evaluation --batch-size 8 --device cpu
 ```
@@ -155,7 +159,7 @@ Inferência avulsa (a entrada deste comando deve estar previamente amostrada se
 for usada para avaliação):
 
 ```bash
-.venv/bin/python -m src.approaches.llm.T2.temporal predict \
+uv run t2-temporal predict \
   --checkpoint models/T2_temporal/best.pt \
   --input data/T2/evaluation/source_raw.h5ad --time 8.5 --delta-time 1.0 \
   --output data/T2/prediction_again.h5ad
@@ -164,7 +168,7 @@ for usada para avaliação):
 ## Testes e limites
 
 ```bash
-OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 .venv/bin/python -m pytest -q tests/test_T2.py
+uv run pytest -q tests/test_T2.py
 ```
 
 Testes cobrem rank/medianas, congelamento, máscara, direto/delta, dependência de
