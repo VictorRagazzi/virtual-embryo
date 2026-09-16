@@ -14,6 +14,7 @@ from src.approaches.llm.T2.data import (
 from src.approaches.llm.T2.model import TemporalGeneformer
 from src.approaches.llm.T2.temporal import build_pairs, distribution_loss, grouped_batches, predict, train
 from src.approaches.llm.T2.experiment import prepare, read_sample, evaluate
+from src.approaches.llm.T2 import search
 
 
 def test_neighbors_allow_repeated_destination():
@@ -305,3 +306,52 @@ def test_evaluate_uses_only_reserved_cells_and_same_expression_scale(tmp_path, m
     evaluate(checkpoint, tmp_path / 'evaluation', batch_size=2)
     assert len(calls) == 2
     assert (tmp_path / 'evaluation' / 'extra.txt').read_text() == 'preservar'
+
+
+def test_search_keeps_best_checkpoint_and_continues_after_failure(tmp_path, monkeypatch):
+    output = tmp_path / 'model'
+    output.mkdir()
+    (output / 'best.pt').write_text('checkpoint anterior')
+    attempts = []
+
+    def fake_train(args):
+        number = int(args.output.parent.name.split('_')[-1])
+        attempts.append(number)
+        if number == 2:
+            raise RuntimeError('memória esgotada')
+        args.output.mkdir(parents=True)
+        (args.output / 'best.pt').write_text(f'checkpoint {number}')
+
+    def fake_evaluate(checkpoint, evaluation_output, **kwargs):
+        number = int(checkpoint.parent.parent.name.split('_')[-1])
+        metrics = {
+            1: {'de_score': 0.1, 'de_direction': 0.2, 'mmd_u': 0.03, 'variogram': 0.01},
+            3: {'de_score': 0.1, 'de_direction': 0.2, 'mmd_u': 0.04, 'variogram': 0.01},
+            4: {'de_score': 0.1, 'de_direction': 0.2, 'mmd_u': 0.03, 'variogram': 0.005},
+        }[number]
+        return {'metrics': {**metrics, 'energy_distance': 0.5}, 'meta': {'task': 'T1'}}
+
+    monkeypatch.setattr(search, 'train', fake_train)
+    monkeypatch.setattr(search, 'evaluate', fake_evaluate)
+    args = argparse.Namespace(max_experiments=4, results_dir=tmp_path / 'search', output=output,
+                              epochs=1, batch_size=2, max_cells=8, max_length=3, components=2,
+                              validation_fraction=0.2, seed=42, alpha=1.0, manifest=tmp_path / 'manifest',
+                              encoder=tmp_path / 'encoder', tokens=tmp_path / 'tokens',
+                              medians=tmp_path / 'medians', gene_map=None, expression_scale='counts',
+                              layer=None, group_column=None, device='cpu')
+    best = search.run_search(args)
+    records = json.loads((args.results_dir / 'results.json').read_text())
+    assert attempts == [1, 2, 3, 4]
+    assert [row['status'] for row in records] == ['ok', 'error', 'ok', 'ok']
+    assert [row.get('new_best') for row in records] == [True, None, False, True]
+    assert 'memória esgotada' in records[1]['error']
+    assert records[3]['metrics']['energy_distance'] == 0.5
+    assert best['iteration'] == 4
+    assert (output / 'best.pt').read_text() == 'checkpoint 4'
+    assert (args.results_dir / 'previous_best.pt').read_text() == 'checkpoint anterior'
+
+
+def test_search_rejects_missing_selection_metric():
+    with pytest.raises(ValueError, match='de_score'):
+        search.selection_key({'de_score': None, 'de_direction': 0.1,
+                              'mmd_u': 0.1, 'variogram': 0.1})

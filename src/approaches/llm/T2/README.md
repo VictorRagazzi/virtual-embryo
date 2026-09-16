@@ -209,6 +209,45 @@ uv run python -m src.approaches.llm.T2.temporal predict \
   --alpha 1 --output data/T2/prediction_again.h5ad
 ```
 
+## Busca de hiperparâmetros na GPU
+
+Com o manifesto e os recursos acima preparados, execute da raiz do projeto:
+
+```bash
+uv run python -m src.approaches.llm.T2.search
+```
+
+O script roda **seis treinos sequenciais** com CUDA, cinco épocas, até 512
+células por estágio, 512 tokens e `batch-size=8` por padrão. A lista editável
+`SEARCH_CONFIGS` em `search.py` varia taxa de aprendizado, número de blocos
+ajustáveis, entrada de expressão projetada e peso de MMD. `--max-experiments`
+limita o número de itens da lista; `--epochs`, `--max-cells`, `--max-length`,
+`--batch-size`, `--alpha`, `--device` e os caminhos dos recursos são argumentos.
+O comando `--help` mostra todos eles. Reduza `--batch-size` ou `--max-length`
+se uma configuração exceder a VRAM. Cada falha fica registrada e a busca segue.
+
+Cada iteração chama `temporal.train` e `experiment.evaluate`, incluindo a
+predição E9.5 e `veckit.score(task="T1")`. O `results.json` de cada busca fica
+em `models/T2_temporal/search/<data-hora>/` e é atualizado após cada iteração.
+Ele contém hiperparâmetros, todas as métricas do Veckit, erros e o critério de
+seleção. Os checkpoints e as avaliações individuais ficam em subdiretórios
+`iteration_XX/`. Se já existir `models/T2_temporal/best.pt`, uma cópia é salva
+como `previous_best.pt` antes da busca. Ao melhorar o resultado, o checkpoint
+da iteração é copiado de forma atômica para `models/T2_temporal/best.pt`, o
+caminho padrão do treino. Uma iteração pior não o substitui.
+
+O critério é lexicográfico: **maior** `de_score`, depois **maior**
+`de_direction`, depois **menor** `mmd_u` e, por fim, **menor** `variogram`.
+Isso prioriza as métricas de mudança gênica do Veckit e usa distâncias como
+desempate, sem ocultar os valores individuais. O código instalado do Veckit
+define `de_score` como recuperação acima do nulo (1 corresponde ao conjunto
+verdadeiro), `de_direction` como correlação de direção, `mmd_u` como distância
+de distribuições e `variogram` como erro quadrático entre variogramas. A MMD
+não enviesada pode ser ligeiramente negativa por ruído amostral; menor ainda é
+melhor. A reserva E8.5/E9.5 passa a ser **validação para escolha de
+hiperparâmetros** nesta busca. Para estimar desempenho final sem esse ajuste,
+é necessária outra amostra independente.
+
 ## Experimentos controlados
 
 Use o mesmo manifesto, seed, parâmetros de treino e orçamento em cada execução.
