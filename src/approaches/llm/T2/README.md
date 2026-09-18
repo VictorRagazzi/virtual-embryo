@@ -1,26 +1,28 @@
 # Mouse-Geneformer temporal
 
-Pipeline independente em `src/approaches/llm/T2`, adaptado do código local de
-`../mouse_geneformer`. Recebe expressão, estágio `t` e intervalo `Δt` em dias.
+Pipeline em `src/approaches/llm/T2` para o Mouse-Geneformer temporal. Recebe
+expressão, estágio `t` e intervalo `Δt` em dias.
 
 ```text
 expressão → tokens por rank/mediana → Mouse-Geneformer → média com máscara
                                                         + t + Δt
                                                         + expressão projetada (opcional)
                                                             ↓
-                                              velocidade por gene
+                                                 saída por gene
                                                             ↓
-                              origem + α × Δt × velocidade
+                              delta: origem + α × saída
+                              direct: origem + α × (saída − origem)
 ```
 
 Os embeddings e os primeiros blocos ficam congelados; os dois últimos blocos
-são ajustados por padrão. A cabeça prevê velocidade por gene. `Δt=0` ou `α=0`
-retorna exatamente a entrada na escala interna `log1p(CP10k)`; `α` é intensidade
-da correção e pode ser variado na inferência sem retreino. Na exportação, o
-clamp em zero preserva essa identidade porque a entrada interna é não negativa;
-isso não implica igualdade com as contagens brutas do arquivo original.
-Checkpoints anteriores, treinados com saída direta ou delta sem fator temporal,
-**não são compatíveis** com esta cabeça e são rejeitados. É necessário retreinar.
+são ajustados por padrão. `--mode delta` (padrão) aprende uma mudança aditiva;
+`--mode direct` aprende a expressão futura. `α=0` retorna a entrada na escala
+interna `log1p(CP10k)`; `Δt` é uma entrada da cabeça, mas zero não obriga a
+predição a ser idêntica à origem. `α` interpola ou escala a saída sem retreino.
+O clamp em zero na exportação preserva a identidade com `α=0`, pois a entrada
+interna é não negativa; isso não implica igualdade com as contagens brutas.
+Checkpoints de velocidade da arquitetura 2 continuam legíveis, com sua fórmula
+original `origem + α × Δt × velocidade`. Checkpoints sem versão são rejeitados.
 Os números e artefatos históricos em [RESULTS.md](RESULTS.md) descrevem a
 arquitetura anterior e não são resultados desta revisão.
 A saída inclui todos os genes comuns aos estágios, inclusive genes sem token.
@@ -44,11 +46,14 @@ Em E8.5, usamos o arquivo oficial; `E85_ex.h5ad` fica fora para manter uma
 6. Escolhe a menor perda de validação interna e avalia o checkpoint uma vez sobre
    as duas amostras reservadas.
 
-`data.py::pair_cells(source_expression, future_expression,
-strategy="nearest_neighbor")` é o ponto de troca do pareamento. Recebe duas
-matrizes na mesma projeção SVD e retorna um índice de destino e uma distância
-por origem. O padrão usa similaridade de expressão, permite destinos repetidos
-e não restringe tipos celulares. Estratégias desconhecidas geram erro.
+`--pairing nearest_neighbor` é o padrão: escolhe o destino mais próximo na SVD,
+permite destinos repetidos e não restringe tipos celulares. `--pairing ot` calcula
+um acoplamento entrópico por transição e split, com marginais empíricas uniformes,
+e amostra um destino por origem da sua linha normalizada. A mesma SVD é ajustada
+somente no treino; a validação usa a projeção treinada, mas calcula seu próprio
+acoplamento sem células de treino. `--ot-regularization` (padrão 0,1) multiplica
+a mediana dos custos quadráticos de cada transição. Ajuste esse valor somente
+na validação interna. OT não usa igualdade de tipo celular como restrição.
 
 ## Entrada quantitativa e perda
 
@@ -60,15 +65,19 @@ pesos, sem nova camada profunda. A ordem dos genes é salva no checkpoint e
 reaplicada na predição. `none` é o padrão para comparar a mudança isolada.
 
 A perda é `MSE(pseudo-par) + --mmd-weight × MMD(população)`, com peso zero por
-padrão. O MSE ainda usa o vizinho escolhido para cada origem. Para MMD, cada
+padrão. O MSE usa o pseudo-par escolhido para cada origem. Para MMD, cada
 lote contém apenas uma transição `(t, t+Δt)` e compara suas predições com uma
 amostra **uniforme das células reais do destino no mesmo split**, antes do
 pareamento. Assim, destinos repetidos nos pseudo-pares não alteram a frequência
 da população real. O controle com peso zero usa o mesmo agrupamento dos lotes,
-para isolar o efeito da perda. Os lotes finais de uma célula são unidos ao anterior; são
-necessárias ao menos duas origens por transição em cada split e `batch-size ≥ 2`.
+para isolar o efeito da perda. Os lotes finais de uma célula são unidos ao anterior.
+Com peso positivo, são necessárias ao menos duas origens por transição em cada
+split e `batch-size ≥ 2`.
 A MMD usa kernel RBF na expressão completa, banda mediana das distâncias entre
 as células reais do lote e estimador enviesado, estável para lotes pequenos.
+`train_mmd` e `validation_mmd` são registrados também com peso zero quando há
+ao menos duas células por lote e por população de destino; ficam nulos se não
+houver lote elegível. Assim, o controle sem MMD pode ser comparado na validação.
 Não é numericamente a métrica `mmd_u` do avaliador. O peso multiplica a MMD
 sem normalização automática; compare MSE, MMD e métricas de avaliação ao
 escolhê-lo **somente com dados de treino/validação interna**. A seleção do
@@ -160,7 +169,7 @@ uv run python -m src.approaches.llm.T2.temporal train \
   --tokens models/mouse-Geneformer/MLM-re_token_dictionary_v1.pkl \
   --medians models/mouse-Geneformer/mouse_gene_median_dictionary.pkl \
   --gene-map models/mouse-Geneformer/gene_map.csv \
-  --expression-scale log1p --trainable-layers 2 \
+  --expression-scale log1p --trainable-layers 2 --mode delta \
   --epochs 3 --batch-size 8 --max-cells 128 --max-length 512 \
   --components 30 --device cpu --output models/T2_temporal
 ```
@@ -175,7 +184,12 @@ Se o treino em CPU deixar a máquina pesada, prefixe o comando com
 a coluna existe em todos os estágios. Isso não transforma a reserva aleatória
 por células em uma avaliação independente por embrião.
 
-Saídas: `best.pt`, `history.json`, `pairs.csv` e `settings.json`. Uma nova
+Saídas: `best.pt`, `history.json`, `pairs.csv` e `settings.json`. Com OT, também
+há `ot/summary.json` e uma matriz `.npz` por transição e split. Cada matriz
+inclui pesos, massas de linhas/colunas, entropia por origem e IDs na ordem da
+matriz. O resumo registra tempo, memória da matriz, distâncias, reutilização de
+destinos, regularização, intervalo temporal e proporções celulares quando há
+rótulos. Uma nova
 execução no mesmo diretório sobrescreve esses arquivos e preserva outros. O
 checkpoint inclui os genes, recursos de tokenização e o manifesto da reserva.
 
@@ -222,7 +236,8 @@ células por estágio, 512 tokens e `batch-size=8` por padrão. A lista editáve
 `SEARCH_CONFIGS` em `search.py` varia taxa de aprendizado, número de blocos
 ajustáveis, entrada de expressão projetada e peso de MMD. `--max-experiments`
 limita o número de itens da lista; `--epochs`, `--max-cells`, `--max-length`,
-`--batch-size`, `--alpha`, `--device` e os caminhos dos recursos são argumentos.
+`--batch-size`, `--alpha`, `--mode`, `--pairing`, `--ot-regularization`, `--device`
+e os caminhos dos recursos são argumentos.
 O comando `--help` mostra todos eles. Reduza `--batch-size` ou `--max-length`
 se uma configuração exceder a VRAM. Cada falha fica registrada e a busca segue.
 
@@ -283,8 +298,13 @@ Para pontuar uma configuração já escolhida, use `experiment evaluate` com
 reserva e salva referência, alvo e predição alinhados. Repita com seeds
 diferentes se a diferença for pequena.
 
-Veja a [proposta de transporte ótimo](OT_PROPOSAL.md), ainda sem alteração do
-pareamento atual.
+Para comparar pareamentos, repita o mesmo treino com a mesma seed, `--mode`,
+manifesto e demais opções, mudando só `--pairing ot --ot-regularization 0.1`
+e `--output`. Comece com `--max-cells 128`: a matriz OT ocupa memória
+proporcional a origens × destinos e é gravada para cada transição. Compare MSE
+e MMD da validação interna antes de usar a reserva de avaliação. Repita com
+outras seeds para medir a variação da amostragem. Veja a
+[proposta de transporte ótimo](OT_PROPOSAL.md) para alternativas futuras.
 
 ## Testes e limites
 
@@ -297,7 +317,7 @@ Testes cobrem rank/medianas, congelamento, máscara, identidade, dependência de
 limite de memória por amostra e treino/checkpoint/inferência com BERT minúsculo
 aleatório **somente nos testes**.
 
-Vizinhos são pseudo-pares, não descendentes observados. O modelo produz uma
+Os destinos escolhidos são pseudo-pares, não descendentes observados. O modelo produz uma
 previsão determinística por origem; não modela explicitamente destinos múltiplos,
 proliferação ou morte. A avaliação por células mede distribuição E8.5→E9.5 em
 estágios presentes no treino; não demonstra generalização para outro embrião ou

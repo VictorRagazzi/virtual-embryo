@@ -1,7 +1,9 @@
 # Proposta de pareamento por transporte ótimo
 
-Esta é uma proposta para discussão; o treino atual continua usando o vizinho
-mais próximo em SVD. Transporte ótimo (OT) entre dois estágios fornece pesos
+O primeiro experimento recomendado abaixo está implementado como `--pairing ot`;
+o padrão continua sendo o vizinho mais próximo em SVD para permitir comparação.
+As demais alternativas desta página são propostas futuras. Transporte ótimo (OT)
+entre dois estágios fornece pesos
 `P[i,j]` para fluxos entre células de origem `i` e de destino `j`, não pares
 observados nem trajetórias individuais. Ajustar a projeção, marginais e custo
 somente nas células de treino; repetir o ajuste separadamente na validação
@@ -60,5 +62,8 @@ e múltiplos destinos ponderados como experimentos separados. O alvo médio
 ponderado serve como controle de possível perda de diversidade.
 
 O cálculo da matriz custa memória proporcional a origens × destinos por par de
-estágios; testar primeiro em subconjuntos de treino e registrar tempo e memória
-antes de ampliar. Nenhum pareamento OT é implementado nesta mudança.
+estágios. Teste primeiro em subconjuntos de treino: `--max-cells 128 --pairing ot`.
+O treino salva `ot/summary.json` com tempo e memória estimada da matriz, além de
+uma matriz `.npz` por transição e split. Consulte o [README](README.md) para a
+comparação controlada. Reamostragem por época, vários destinos ponderados e alvo
+médio ainda não foram implementados.

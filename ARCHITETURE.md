@@ -86,7 +86,10 @@ o experimento multitemporal com os arquivos embrionários disponíveis E6.75–E
 somente no treino. O modelo recebe o tempo de origem e o intervalo de cada par.
 `experiment.py evaluate` recupera a reserva do checkpoint, prevê E9.5 e chama
 `veckit.score(task="T1")` somente com as amostras. O código experimental anterior
-foi preservado. Veja [execução e limitações](src/approaches/llm/T2/README.md).
+foi preservado. `temporal.py train` aceita `--mode delta|direct` e
+`--pairing nearest_neighbor|ot`; OT usa um acoplamento entrópico por transição e
+split e registra pesos e diagnósticos em `ot/`. Veja
+[execução e limitações](src/approaches/llm/T2/README.md).
 
 ## Regra para novas implementações
 

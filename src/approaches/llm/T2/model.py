@@ -1,18 +1,21 @@
-"""Encoder pré-treinado com velocidade temporal residual."""
+"""Encoder pré-treinado com regressão temporal direta ou residual."""
 
 import torch
 from torch import nn
 
 
 class TemporalGeneformer(nn.Module):
-    def __init__(self, encoder, output_genes, trainable_layers=2, expression_input="none"):
+    def __init__(self, encoder, output_genes, trainable_layers=2, expression_input="none", mode="delta"):
         super().__init__()
+        if mode not in {"delta", "direct", "velocity"}:
+            raise ValueError("Modo deve ser delta ou direct.")
         if expression_input not in {"none", "projected"}:
             raise ValueError("expression_input deve ser none ou projected.")
         layers = encoder.encoder.layer
         if not 0 <= trainable_layers <= len(layers):
             raise ValueError("Quantidade de camadas ajustáveis fora do intervalo.")
         self.encoder = encoder
+        self.mode = mode
         self.expression_input = expression_input
         self.trainable_layers = trainable_layers
         for parameter in encoder.parameters():
@@ -45,8 +48,12 @@ class TemporalGeneformer(nn.Module):
         features = [pooled, times / 10.0]
         if self.expression_projection is not None:
             features.append(self.expression_projection(expression))
-        velocity = self.head(torch.cat(features, dim=1))
-        return expression + (alpha * times[:, 1:2]) * velocity
+        result = self.head(torch.cat(features, dim=1))
+        if self.mode == "velocity":  # Checkpoints da arquitetura anterior.
+            return expression + (alpha * times[:, 1:2]) * result
+        if self.mode == "delta":
+            return expression + alpha * result
+        return expression + alpha * (result - expression)
 
 
 def load_pretrained_encoder(path):

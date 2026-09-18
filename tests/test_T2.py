@@ -9,7 +9,7 @@ from scipy import sparse
 import torch
 
 from src.approaches.llm.T2.data import (
-    prepare_expression, pair_cells, split_cells, tokenize_expression,
+    prepare_expression, pair_cells, pair_cells_ot, split_cells, tokenize_expression,
 )
 from src.approaches.llm.T2.model import TemporalGeneformer
 from src.approaches.llm.T2.temporal import build_pairs, distribution_loss, grouped_batches, predict, train
@@ -21,6 +21,37 @@ def test_neighbors_allow_repeated_destination():
     indices, distances = pair_cells(np.array([[0.0], [0.2], [10.0]]), np.array([[9.0], [0.0]]))
     np.testing.assert_array_equal(indices, [1, 1, 0])
     np.testing.assert_allclose(distances, [0, 0.2, 1])
+
+
+def test_ot_marginals_sampling_and_diagnostics(tmp_path):
+    source = np.array([[0.0], [0.1], [2.0]])
+    target = np.array([[0.0], [2.0]])
+    first = pair_cells_ot(source, target, 0.5, 42)
+    second = pair_cells_ot(source, target, 0.5, 42)
+    np.testing.assert_array_equal(first[0], second[0])
+    np.testing.assert_allclose(first[2].sum(axis=1), 1 / 3, atol=1e-6)
+    np.testing.assert_allclose(first[2].sum(axis=0), 1 / 2, atol=1e-6)
+    assert first[3]["mean_entropy"] > 0
+    with pytest.raises(ValueError, match="ot_regularization"):
+        pair_cells_ot(source, target, 0, 42)
+
+
+def test_ot_pairs_stay_within_splits_and_save_weights(tmp_path):
+    obs = pd.DataFrame({"celltype": ["a", "a", "b", "b"]}, index=list("abcd"))
+    stages = {day: {"obs": obs, "expression": sparse.csr_matrix(
+        [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [1., 1., 0.]])}
+        for day in [8.5, 9.5]}
+    splits = {day: (np.array([0, 1]), np.array([2, 3])) for day in stages}
+    pairs, _ = build_pairs(stages, splits, 2, 42, "ot", 0.5, tmp_path)
+    for split, rows in enumerate(pairs):
+        for start, end, source, target in rows:
+            assert source in splits[start][split]
+            assert target in splits[end][split]
+    saved = np.load(tmp_path / "ot" / "8.5_9.5_train.npz")
+    assert saved["weights"].shape == (2, 2)
+    summary = json.loads((tmp_path / "ot" / "summary.json").read_text())
+    assert summary[0]["delta_time"] == 1
+    assert summary[0]["source_cell_types"] == {"a": 1.0}
 
 
 def test_normalization_and_token_rank():
@@ -65,7 +96,7 @@ def small_encoder():
 
 def test_freezing_masking_and_zero_interval():
     torch.set_num_threads(1)
-    model = TemporalGeneformer(small_encoder(), 3, 1)
+    model = TemporalGeneformer(small_encoder(), 3, 1, mode="velocity")
     assert not any(p.requires_grad for p in model.encoder.embeddings.parameters())
     assert not any(p.requires_grad for p in model.encoder.encoder.layer[0].parameters())
     assert all(p.requires_grad for p in model.encoder.encoder.layer[1].parameters())
@@ -94,8 +125,26 @@ def test_freezing_masking_and_zero_interval():
     torch.testing.assert_close(doubled - expression, 2 * (normal - expression))
 
 
-@pytest.mark.parametrize("expression_input,mmd_weight,group_column", [("none", 0.0, None), ("projected", 0.0, "embryo"), ("none", 0.1, None)])
-def test_train_and_predict_roundtrip(tmp_path, expression_input, mmd_weight, group_column):
+def test_delta_and_direct_modes():
+    expression = torch.ones(1, 3)
+    ids, mask, times = torch.tensor([[1]]), torch.tensor([[1]]), torch.tensor([[8.5, 1.]])
+    for mode, expected in [("delta", 1.5), ("direct", 0.5)]:
+        model = TemporalGeneformer(small_encoder(), 3, 0, mode=mode).eval()
+        for parameter in model.head.parameters():
+            parameter.data.zero_()
+        model.head[-1].bias.data.fill_(0.5)
+        torch.testing.assert_close(model(ids, mask, expression, times),
+                                   torch.full_like(expression, expected))
+        torch.testing.assert_close(model(ids, mask, expression, times, alpha=0), expression)
+    with pytest.raises(ValueError, match="Modo"):
+        TemporalGeneformer(small_encoder(), 3, mode="invalid")
+
+
+@pytest.mark.parametrize("expression_input,mmd_weight,group_column,mode,pairing", [
+    ("none", 0.0, None, "delta", "nearest_neighbor"),
+    ("projected", 0.0, "embryo", "direct", "nearest_neighbor"),
+    ("none", 0.1, None, "delta", "ot")])
+def test_train_and_predict_roundtrip(tmp_path, expression_input, mmd_weight, group_column, mode, pairing):
     torch.set_num_threads(1)
     encoder = tmp_path / "encoder"
     small_encoder().save_pretrained(encoder)
@@ -119,6 +168,7 @@ def test_train_and_predict_roundtrip(tmp_path, expression_input, mmd_weight, gro
                               validation_fraction=0.3 if mmd_weight else 0.25,
                               group_column=group_column, components=2,
                               expression_input=expression_input, mmd_weight=mmd_weight,
+                              mode=mode, pairing=pairing, ot_regularization=0.5,
                               trainable_layers=1, device="cpu")
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"stages": stages, "evaluation": {"source": {"cells": ["cell0"]}, "target": {"cells": []}}}))
@@ -137,6 +187,15 @@ def test_train_and_predict_roundtrip(tmp_path, expression_input, mmd_weight, gro
     history = json.loads((args.output / "history.json").read_text())
     assert np.isfinite(history[0]["validation_mse"])
     assert np.isfinite(history[0]["validation_loss"])
+    if mmd_weight:
+        assert np.isfinite(history[0]["validation_mmd"])
+    else:
+        assert history[0]["train_mmd"] > 0
+    checkpoint_data = torch.load(args.output / "best.pt", weights_only=True)
+    assert checkpoint_data["mode"] == mode
+    assert checkpoint_data["architecture_version"] == 3
+    if pairing == "ot":
+        assert (args.output / "ot" / "summary.json").exists()
     if group_column:
         records = pd.read_csv(args.output / "pairs.csv")
         members = {}
@@ -171,7 +230,7 @@ def test_train_and_predict_roundtrip(tmp_path, expression_input, mmd_weight, gro
     reordered_output = tmp_path / "reordered_prediction.h5ad"
     predict(argparse.Namespace(checkpoint=args.output / "best.pt", input=reordered_input,
                                output=reordered_output, time=8.5, delta_time=0.0,
-                               alpha=1.0, device="cpu", batch_size=3))
+                               alpha=0.0, device="cpu", batch_size=3))
     aligned = ad.read_h5ad(reordered_output)
     assert aligned.var_names.tolist() == ["a", "b", "c"]
     np.testing.assert_array_equal(aligned.X, normalized.toarray())

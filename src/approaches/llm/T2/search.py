@@ -67,7 +67,10 @@ def run_search(args):
         parameters = {"epochs": args.epochs, "batch_size": args.batch_size,
                       "max_cells": args.max_cells, "max_length": args.max_length,
                       "components": args.components, "validation_fraction": args.validation_fraction,
-                      "seed": args.seed, "alpha": args.alpha, **config}
+                      "seed": args.seed, "alpha": args.alpha,
+                      "mode": getattr(args, "mode", "delta"),
+                      "pairing": getattr(args, "pairing", "nearest_neighbor"),
+                      "ot_regularization": getattr(args, "ot_regularization", 0.1), **config}
         record = {"iteration": number, "hyperparameters": parameters,
                   "criterion": CRITERION, "status": "running"}
         print(f"\n[{number}/{args.max_experiments}] Treino: {json.dumps(parameters)}", flush=True)
@@ -146,6 +149,9 @@ def main():
     parser.add_argument("--max-cells", type=int, default=512)
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--components", type=int, default=50)
+    parser.add_argument("--mode", choices=["delta", "direct"], default="delta")
+    parser.add_argument("--pairing", choices=["nearest_neighbor", "ot"], default="nearest_neighbor")
+    parser.add_argument("--ot-regularization", type=float, default=0.1)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=1.0)

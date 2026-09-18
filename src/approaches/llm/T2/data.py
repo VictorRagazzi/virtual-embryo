@@ -8,15 +8,13 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 from scipy import sparse
+from scipy.spatial.distance import cdist
+from scipy.special import logsumexp
 from sklearn.neighbors import NearestNeighbors
 
 
 def pair_cells(source_expression, future_expression, strategy="nearest_neighbor"):
-    """Retorna um índice e uma distância por origem; permite reutilizar destinos.
-
-    As matrizes devem usar as mesmas coordenadas. Substitua somente esta função
-    para experimentar outro pareamento. Estes são pseudo-pares, não linhagens.
-    """
+    """Vizinho mais próximo nas mesmas coordenadas; permite reutilizar destinos."""
     if strategy != "nearest_neighbor":
         raise ValueError(f"Estratégia desconhecida: {strategy}")
     if source_expression.shape[0] == 0 or future_expression.shape[0] == 0:
@@ -25,6 +23,52 @@ def pair_cells(source_expression, future_expression, strategy="nearest_neighbor"
     neighbors.fit(future_expression)
     distances, indices = neighbors.kneighbors(source_expression)
     return indices[:, 0], distances[:, 0]
+
+
+def pair_cells_ot(source_expression, future_expression, regularization, seed):
+    """Amostra um destino por origem de um acoplamento entrópico uniforme."""
+    if source_expression.shape[0] == 0 or future_expression.shape[0] == 0:
+        raise ValueError("O pareamento exige células nos dois tempos.")
+    if not np.isfinite(regularization) or regularization <= 0:
+        raise ValueError("ot_regularization deve ser positivo e finito.")
+    distance = cdist(source_expression, future_expression, metric="euclidean")
+    cost = distance ** 2
+    positive = cost[cost > 0]
+    cost_scale = float(np.median(positive)) if len(positive) else 1.0
+    # A escala mediana permite comparar a mesma regularização entre intervalos.
+    log_kernel = -cost / (regularization * cost_scale)
+    source_mass = np.full(len(source_expression), 1 / len(source_expression))
+    target_mass = np.full(len(future_expression), 1 / len(future_expression))
+    log_source, log_target = np.log(source_mass), np.log(target_mass)
+    log_u = np.zeros_like(source_mass)
+    log_v = np.zeros_like(target_mass)
+    for iteration in range(2000):
+        log_u = log_source - logsumexp(log_kernel + log_v[None, :], axis=1)
+        log_v = log_target - logsumexp(log_kernel + log_u[:, None], axis=0)
+        if iteration % 10 == 9:
+            row_mass = np.exp(logsumexp(log_kernel + log_u[:, None] + log_v[None, :], axis=1))
+            if np.max(np.abs(row_mass - source_mass)) < 1e-4 * source_mass[0]:
+                break
+    else:
+        raise ValueError("OT não convergiu; aumente ot_regularization.")
+    weights = np.exp(log_kernel + log_u[:, None] + log_v[None, :])
+    row_mass = weights.sum(axis=1)
+    if np.any(row_mass <= np.finfo(float).tiny):
+        raise ValueError("OT produziu origens sem massa confiável.")
+    probabilities = weights / row_mass[:, None]
+    rng = np.random.default_rng(seed)
+    indices = np.array([rng.choice(len(target_mass), p=row / row.sum()) for row in probabilities])
+    return indices, distance[np.arange(len(indices)), indices], weights, {
+        "regularization": regularization, "cost_scale": cost_scale,
+        "iterations": iteration + 1,
+        "row_mass_min": float(row_mass.min()), "row_mass_max": float(row_mass.max()),
+        "column_mass_min": float(weights.sum(axis=0).min()),
+        "column_mass_max": float(weights.sum(axis=0).max()),
+        "mean_entropy": float(np.mean(-np.sum(probabilities * np.log(
+            np.maximum(probabilities, np.finfo(float).tiny)), axis=1))),
+        "mean_sampled_distance": float(distance[np.arange(len(indices)), indices].mean()),
+        "reused_destinations": int(len(indices) - len(np.unique(indices))),
+    }
 
 
 def load_dictionary(path):
