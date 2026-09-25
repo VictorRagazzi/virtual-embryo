@@ -1,0 +1,219 @@
+{
+  "datasets": {
+    "E85": {
+      "celltype_counts": {
+        "AVC-CM": 598,
+        "Blood": 266,
+        "EXEM": 863,
+        "Endothelium": 1139,
+        "Foregut": 2405,
+        "IFT-CM": 949,
+        "JCF": 1119,
+        "LV-CM": 344,
+        "NCC": 287,
+        "Neural Tube": 773,
+        "OFT/RV-CM": 1176,
+        "Paraxial Mesoderm": 934,
+        "Pericardium": 745,
+        "RV-CM": 442,
+        "SV-CM": 310,
+        "Surface Ectoderm": 1423,
+        "aSHF": 822,
+        "pSHF": 2192
+      },
+      "dense_memory_bytes": {
+        "float32": 2167873180,
+        "float64": 4335746360
+      },
+      "fields": {
+        "layers": [],
+        "obs": [
+          "_index",
+          "celltype"
+        ],
+        "obsm": [
+          "X_umap.harmony.rna"
+        ],
+        "uns": [
+          "celltype_palette"
+        ],
+        "var": [
+          "_index"
+        ]
+      },
+      "genes": {
+        "count": 32285,
+        "first_five": [
+          "Xkr4",
+          "Gm1992",
+          "Gm19938",
+          "Gm37381",
+          "Rp1"
+        ],
+        "last_five": [
+          "AC124606.1",
+          "AC133095.2",
+          "AC133095.1",
+          "AC234645.1",
+          "AC149090.1"
+        ],
+        "order_sha256": "807549e15be019899fa83cbab864bec87ad278f60c272e39819c7302cc2285b8",
+        "unique": 32285
+      },
+      "normalization_evidence": {
+        "interpretation": "Faixa n\u00e3o negativa at\u00e9 ~6.9 \u00e9 compat\u00edvel com log1p; n\u00e3o h\u00e1 metadado expl\u00edcito do m\u00e9todo ou fator de normaliza\u00e7\u00e3o.",
+        "layers_present": false,
+        "raw_present": false,
+        "uns_keys": [
+          "celltype_palette"
+        ]
+      },
+      "path": "data/E85.h5ad",
+      "sha256": "8eab2d0ccaa89f92861b09816b76b6a731b8ed6b5995e4af196d9ed8ff76e504",
+      "shape": [
+        16787,
+        32285
+      ],
+      "x": {
+        "dtype": "float32",
+        "effective_density": 0.120667554916658,
+        "effective_nonzero_values": 65397989,
+        "encoding": "csc_matrix",
+        "explicit_zeros": 5581933,
+        "infinite": false,
+        "max_stored": 6.8928117752075195,
+        "min_stored": 0.0,
+        "nan": false,
+        "stored_density": 0.13096692676459976,
+        "stored_values": 70979922
+      }
+    },
+    "E95": {
+      "celltype_counts": {
+        "AVC-CM": 326,
+        "BEC": 271,
+        "Blood": 213,
+        "Endocardium": 1555,
+        "Epithelium": 233,
+        "Foregut": 871,
+        "Hepatocyte": 1190,
+        "IFT-CM": 690,
+        "NCC": 47,
+        "NCC-derived": 621,
+        "OFT/RV-CM": 1830,
+        "Pericardium": 897,
+        "Proepicardium": 883,
+        "ST": 879,
+        "SV-CM": 1273,
+        "Surface Ectoderm": 554,
+        "V-CM": 1144,
+        "aPHM": 226,
+        "aSHF": 1050,
+        "pPHM": 1194,
+        "pSHF": 1110
+      },
+      "dense_memory_bytes": {
+        "float32": 2202740980,
+        "float64": 4405481960
+      },
+      "fields": {
+        "layers": [],
+        "obs": [
+          "_index",
+          "celltype"
+        ],
+        "obsm": [
+          "X_umap.harmony.rna"
+        ],
+        "uns": [
+          "celltype_palette"
+        ],
+        "var": [
+          "_index"
+        ]
+      },
+      "genes": {
+        "count": 32285,
+        "first_five": [
+          "Xkr4",
+          "Gm1992",
+          "Gm19938",
+          "Gm37381",
+          "Rp1"
+        ],
+        "last_five": [
+          "AC124606.1",
+          "AC133095.2",
+          "AC133095.1",
+          "AC234645.1",
+          "AC149090.1"
+        ],
+        "order_sha256": "807549e15be019899fa83cbab864bec87ad278f60c272e39819c7302cc2285b8",
+        "unique": 32285
+      },
+      "normalization_evidence": {
+        "interpretation": "Faixa n\u00e3o negativa at\u00e9 ~6.9 \u00e9 compat\u00edvel com log1p; n\u00e3o h\u00e1 metadado expl\u00edcito do m\u00e9todo ou fator de normaliza\u00e7\u00e3o.",
+        "layers_present": false,
+        "raw_present": false,
+        "uns_keys": [
+          "celltype_palette"
+        ]
+      },
+      "path": "data/E95.h5ad",
+      "sha256": "0296e0043842f944a663f3c11ac1542d1bbee733c1cd657bd56f75af65958361",
+      "shape": [
+        17057,
+        32285
+      ],
+      "x": {
+        "dtype": "float32",
+        "effective_density": 0.1222123864967546,
+        "effective_nonzero_values": 67300558,
+        "encoding": "csc_matrix",
+        "explicit_zeros": 6054489,
+        "infinite": false,
+        "max_stored": 6.898279190063477,
+        "min_stored": 0.0,
+        "nan": false,
+        "stored_density": 0.13320685031246843,
+        "stored_values": 73355047
+      }
+    }
+  },
+  "gene_comparison": {
+    "e85_only_count": 0,
+    "e95_only_count": 0,
+    "first_mismatch": null,
+    "first_mismatch_index": null,
+    "same_length": true,
+    "same_order": true
+  },
+  "generated_at_utc": "2026-09-24T00:32:48.650378+00:00",
+  "git_revision": "5be5ecb908bb0a8bbdd89be62ee08cdb2e63d01b",
+  "ollama": {
+    "base_url_configured": false,
+    "model_configured": false
+  },
+  "scgpt_checkpoint": {
+    "architecture": {
+      "d_hid": 512,
+      "embsize": 512,
+      "max_seq_len": 1200,
+      "n_bins": 51,
+      "nheads": 8,
+      "nlayers": 12
+    },
+    "embedding_dim": 512,
+    "embedding_shape": [
+      60697,
+      512
+    ],
+    "local_args_data_source": "/scratch/ssd004/datasets/cellxgene/scb/heart/all_counts",
+    "path": "models/scGPT_heart/best_model.pt",
+    "provenance_reason": "N\u00e3o h\u00e1 URL, licen\u00e7a, hash de origem, corpus audit\u00e1vel ou intervalo de est\u00e1gios que exclua a janela proibida.",
+    "provenance_status": "BLOQUEADO_POR_PROVENIENCIA",
+    "sha256": "23b4c43f403a4069e3acaa2a11c9a7be971b14e3c363739a6c4d24651c3feee7",
+    "state_tensor_count": 163
+  },
+  "seed": 42
+}

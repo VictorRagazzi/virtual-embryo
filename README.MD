@@ -94,8 +94,11 @@ Flags úteis:
 |-------------------|---------|---------------------------------------------------------|
 | `--n-comps`       | 50      | Número de componentes principais do PCA conjunto        |
 | `--target-cells`  | 2500    | Total de células na predição final (faixa: 1000–5118)   |
+| `--max-cells-per-stage` | sem limite | Limita células antes da PCA; obrigatório para auditorias em máquina com memória limitada, pois a implementação densifica o subconjunto |
 | `--skip-llm`      | —       | Pula a Parte 2 (sem tipos novos), útil para debug rápido|
 | `--seed`          | 0       | Seed para reprodutibilidade da amostragem               |
+
+> Atenção: sem `--max-cells-per-stage`, a PCA histórica densifica E8.5 e E9.5. A auditoria M0 mediu 4,07 GiB somente para a concatenação em `float32`, antes de cópias temporárias; use uma amostra explicitamente registrada para diagnósticos locais.
 
 ### Gerar uma submissão dummy (baseline para testar o formato de envio)
 

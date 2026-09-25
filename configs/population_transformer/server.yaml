@@ -1,0 +1,63 @@
+experiment: E020
+seed: 42
+mode: server
+paths:
+  data_dir: data
+  output_dir: outputs/population_transformer/E020
+  required:
+    - data/E85.h5ad
+    - data/E95.h5ad
+    - models/scGPT_heart/best_model.pt
+    - models/scGPT_heart/vocab.json
+  cache_dir: outputs/population_transformer/cache
+  embeddings: outputs/population_transformer/cache/embeddings.npz
+  tokens: outputs/population_transformer/cache/tokens_k50.npz
+  decoder: outputs/population_transformer/cache/decoder.pt
+data:
+  official_holdout_cells: 2500
+  stratify_column: celltype
+  external_sources: [E65_ex.h5ad, E675_ex.h5ad, E70_ex.h5ad, E725_ex.h5ad, E75_ex.h5ad, E775_ex.h5ad, E80_ex.h5ad, E825_ex.h5ad, E85_ex.h5ad]
+  temporal_holdout: E85_ex.h5ad
+  target_data_allowed: false
+preparation:
+  decoder_cells_per_stage: 64
+  decoder_epochs: 8
+  encoder_genes: 256
+  embedding_batch_size: 32
+model:
+  groups: 50
+  architectures:
+    - {model_dim: 128, layers: 2, heads: 4}
+    - {model_dim: 128, layers: 4, heads: 4}
+    - {model_dim: 256, layers: 2, heads: 8}
+    - {model_dim: 256, layers: 4, heads: 8}
+  dropout: 0.05
+loss:
+  structural_weights: {proportion: 1.0, center: 1.0, dispersion: 1.0}
+  ranking_genes: 2048
+  ranking_block_size: 128
+  ranking_temperature: 0.1
+  top_k: 100
+  ranking_weight: 0.1
+  rff_features: 512
+  rff_sigma: 1.0
+  mmd_weight: 0.1
+  phase2: [structural, structural_ranking, structural_mmd, structural_ranking_mmd]
+training:
+  epochs: 250
+  patience: 25
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  seeds: [42, 43]
+  amp: true
+  resume: true
+  threads: 4
+  loss_cells: 256
+  oom_block_fallbacks: [128, 64, 32]
+generation:
+  n_cells: 2500
+  primary_variant: expression_residual_e95
+  variants: [decoder_raw, expression_residual_e95, nearest_e95]
+selection:
+  epsilon: 1.0e-8
+  weights: {de_ranking: 0.4, rff_mmd: 0.3, structure: 0.2, proportion: 0.1}

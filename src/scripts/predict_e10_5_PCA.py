@@ -69,9 +69,27 @@ DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY"
 # Parte 0 — I/O e validacao
 # ---------------------------------------------------------------------------
 
-def load_data(path: str, label: str) -> ad.AnnData:
+def load_data(
+    path: str,
+    label: str,
+    max_cells: int | None = None,
+    seed: int = RANDOM_STATE,
+) -> ad.AnnData:
     log.info("Carregando %s de %s", label, path)
-    adata = ad.read_h5ad(path)
+    if max_cells is None:
+        adata = ad.read_h5ad(path)
+    else:
+        if max_cells <= 0:
+            raise ValueError("--max-cells-per-stage deve ser positivo.")
+        backed = ad.read_h5ad(path, backed="r")
+        try:
+            if max_cells >= backed.n_obs:
+                adata = backed.to_memory()
+            else:
+                indices = np.sort(np.random.default_rng(seed).choice(backed.n_obs, max_cells, replace=False))
+                adata = backed[indices].to_memory()
+        finally:
+            backed.file.close()
     if CELLTYPE_COL not in adata.obs.columns:
         raise ValueError(f"{label}: coluna '{CELLTYPE_COL}' ausente em .obs")
     log.info(
@@ -530,6 +548,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", required=True, help="Caminho de saida para prediction_e10_5.h5ad")
     p.add_argument("--n-comps", type=int, default=N_PCA_COMPONENTS)
     p.add_argument("--target-cells", type=int, default=TARGET_N_CELLS)
+    p.add_argument("--max-cells-per-stage", type=int, default=None,
+                   help="Limita cada estágio antes da densificação da PCA; use para auditoria segura.")
     # p.add_argument("--llm-provider", default=DEFAULT_LLM_PROVIDER,
     #                 choices=["openrouter", "openai", "anthropic"])
     # p.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
@@ -549,8 +569,8 @@ def main() -> None:
     llm_provider = os.getenv("LLM_PROVIDER", DEFAULT_LLM_PROVIDER)
     llm_model = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
 
-    adata_e85 = load_data(args.e85, "E8.5")
-    adata_e95 = load_data(args.e95, "E9.5")
+    adata_e85 = load_data(args.e85, "E8.5", args.max_cells_per_stage, args.seed)
+    adata_e95 = load_data(args.e95, "E9.5", args.max_cells_per_stage, args.seed + 1)
 
     # Parte 1 -----------------------------------------------------------
     ctx = fit_joint_pca(adata_e85, adata_e95, n_comps=args.n_comps)

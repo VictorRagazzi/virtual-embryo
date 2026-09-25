@@ -70,13 +70,16 @@ class ScGPTRegressor(nn.Module):
         self.decoder = ExprDecoder(d_model)
 
     def forward(self, gene_ids, values, pad_mask):
+        return self.decoder(self.encode(gene_ids, values, pad_mask))
+
+    def encode(self, gene_ids, values, pad_mask):
+        """Retorna os estados contextualizados antes do decoder por gene."""
         gene_emb = self.enc_norm(self.gene_embedding(gene_ids))
         value_emb = self.value_encoder(values)
         flag_emb = self.flag_encoder(torch.zeros_like(gene_ids))
 
         x = gene_emb + value_emb + flag_emb
-        x = self.transformer_encoder(x, src_key_padding_mask=pad_mask)
-        return self.decoder(x)
+        return self.transformer_encoder(x, src_key_padding_mask=pad_mask)
 
 
 def _remap_key(key):
