@@ -17,6 +17,8 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "moscot>=0.5",
     "scikit-learn>=1.4",
+    "veckit>=0.1.2",
+    "h5py>=3.10",
 ]
 
 

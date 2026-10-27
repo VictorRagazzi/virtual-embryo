@@ -33,6 +33,7 @@ virtualembryo/
 ├── src/
 │   ├── scripts/
 │   │   ├── visualize.py               # Exploração e visualização dos dados brutos
+│   │   ├── score_local.py             # Placar local da Task 1 (E10.5), igual ao leaderboard
 │   │   └── get_dummy.py               # Gera uma submissão dummy para testar o formato
 │   └── approaches/                    # Diferentes abordagens exploradas para a Task 1
 │       ├── genomic_expression/        # Abordagem baseada em perfis de expressão gênica
@@ -60,6 +61,78 @@ echo "OPENROUTER_API_KEY=sua_chave_aqui" >> .env
 echo "LLM_PROVIDER=openrouter" >> .env
 echo "LLM_MODEL=deepseek/deepseek-v4-flash" >> .env
 ```
+
+## Score local (E10.5)
+
+`src/scripts/score_local.py` calcula localmente o score da Task 1 na validação (E10.5), exatamente como o leaderboard, usando o E10.5 liberado pela organização. Foi verificado que reproduz 3 submissões reais do leaderboard com 4 casas decimais (por exemplo 58.2302, 52.5650 e 50.8304) e as 6 âncoras oficiais.
+
+### Requisitos
+
+- Arquivos oficiais em `data/`: `E95.h5ad` (17.057 células) e `E105.h5ad` (24.979 células, o E10.5 liberado).
+- Dependências: `uv sync`, ou `pip install veckit anndata h5py numpy scipy scikit-learn`. O `veckit` é o pacote oficial do scorer no PyPI.
+
+### Uso
+
+Em Python, a partir da raiz do repositório:
+
+```python
+from src.scripts.score_local import score_local
+
+resultado = score_local("data/E105.h5ad", "minha_previsao.h5ad")   # local_e95="data/E95.h5ad" por padrão
+print(resultado["total"])
+```
+
+Pela linha de comando:
+
+```bash
+uv run python -m src.scripts.score_local --e105 data/E105.h5ad --e95 data/E95.h5ad --previsao minha_previsao.h5ad
+```
+
+Saída de exemplo:
+
+```
+Métrica         Peso   Skill (0-100)   Valor bruto
+de_score        0.25         45.5642       -0.1648
+de_direction    0.25         54.1944        0.1223
+mmd_u           0.30         56.6695       0.06487
+variogram       0.20         53.1227      0.004624
+TOTAL                        52.5650
+Nota: copy_last (copiar o E9.5) = 50 nesta escala.
+```
+
+O retorno é um dicionário com:
+
+- `total`: score final (0 a 100);
+- `componentes`: skill de 0 a 100 de cada métrica;
+- `metricas_brutas`: valores brutos de `de_score`, `de_direction`, `mmd_u` e `variogram`;
+- `info`: número de células usadas, avisos e pico de memória.
+
+Escala: `total = 0.25·de_score + 0.25·de_direction + 0.30·mmd_u + 0.20·variogram`. Por construção, 50 corresponde a copy_last (copiar o E9.5) e 100 é o teto (metade do alvo contra a outra metade).
+
+### Requisitos da previsão
+
+O script valida o arquivo e mostra um erro claro quando algo não bate:
+
+- entre 1.000 e 5.118 células;
+- exatamente os 32.285 genes, na mesma ordem do E9.5 (`var_names`);
+- valores finitos e não negativos;
+- escala log1p CP10k (`sc.pp.normalize_total(adata, target_sum=1e4)` seguido de `sc.pp.log1p`). Se a escala parecer errada, é emitido apenas um aviso.
+
+### Como funciona
+
+O script replica a receita do servidor:
+
+- subamostra de 10% de cada estágio (sorteio sem reposição, seed 0): o E9.5 gera 1.706 células de referência e o E10.5 gera 2.498 células, divididas ao meio (`split_half`, seed 0);
+- a primeira metade (1.249 células) é o alvo, e a outra metade estima o teto;
+- métricas oficiais do `veckit`, com as âncoras oficiais do T1:val (fontes: https://virtualembryo.ai/challenge/data e https://virtualembryo.ai/challenge/panels/index.json).
+
+### Memória e tempo
+
+Pico de cerca de 1,5 GB de RAM e 15 a 20 s por previsão. O script lê só as células sorteadas dos `.h5ad` grandes, então roda em máquinas modestas.
+
+### Cuidado
+
+O alvo tem apenas 1.249 células e é fixo. Otimizar demais contra esse score é sobreajustar a validação. O teste final (E12.5) é outro alvo, então este número não é estimativa da pontuação final.
 
 ## Comandos
 
